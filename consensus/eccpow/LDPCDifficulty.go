@@ -37,9 +37,12 @@ var (
 	Sensitivity         = big.NewInt(8)
 	SensitivityAnnapurna = big.NewInt(1024)
 	threshold = big.NewInt(7)
+	thresholdBCAI = big.NewInt(7) // 36) // 10 ) // 36)
 
 	// BlockGenerationTime for Seoul
 	BlockGenerationTimeSeoul = big.NewInt(10) // 36) // 10 ) // 36)
+
+
 	SeoulDifficulty   = big.NewInt(1023)
 
 	//initLevel int = 10
@@ -217,6 +220,59 @@ func MakeLDPCDifficultyCalculatorAnnapurna() func(time uint64, parent *types.Hea
 		return x
 	}
 }
+
+func MakeLDPCDifficultyCalculatorBCAI() func(time uint64, parent *types.Header) *big.Int {
+	return func(time uint64, parent *types.Header) *big.Int {
+		bigTime := new(big.Int).SetUint64(time)
+		bigParentTime := new(big.Int).SetUint64(parent.Time)
+
+		// holds intermediate values to make the algo easier to read & audit
+		x := new(big.Int)
+		y := new(big.Int)
+
+		// (2 if len(parent_uncles) else 1) - (block_timestamp - parent_timestamp) // BlockGenerationTime
+		x.Sub(bigTime, bigParentTime)
+		//fmt.Printf("block_timestamp - parent_timestamp : %v\n", x)
+
+		x.Div(x, thresholdBCAI)
+		//fmt.Printf("(block_timestamp - parent_timestamp) // 7 : %v\n", x)
+
+		if parent.UncleHash == types.EmptyUncleHash {
+			//fmt.Printf("No uncle\n")
+			x.Sub(big1, x)
+		} else {
+			//fmt.Printf("Uncle block exists")
+			x.Sub(big2, x)
+		}
+		//fmt.Printf("(2 if len(parent_uncles) else 1) - (block_timestamp - parent_timestamp) // 7 : %v\n", x)
+
+		// max((2 if len(parent_uncles) else 1) - (block_timestamp - parent_timestamp) // 7, -99)
+		if x.Cmp(bigMinus99) < 0 {
+			x.Set(bigMinus99)
+		}
+		//fmt.Printf("max(1 - (block_timestamp - parent_timestamp) / 7, -99) : %v\n", x)
+
+		// parent_diff + (parent_diff / Sensitivity * max((2 if len(parent.uncles) else 1) - ((timestamp - parent.timestamp) // 7), -99))
+		y.Div(parent.Difficulty, SensitivityAnnapurna)
+		//fmt.Printf("parent.Difficulty / 1024 : %v\n", y)
+
+		x.Mul(y, x)
+		//fmt.Printf("parent.Difficulty / 1024 * max(1 - (block_timestamp - parent_timestamp) // 7, -99) : %v\n", x)
+
+		x.Add(parent.Difficulty, x)
+		//fmt.Printf("parent.Difficulty - parent.Difficulty / 8 * max(1 - (block_timestamp - parent_timestamp) // 7, -99) : %v\n", x)
+
+		// minimum difficulty can ever be (before exponential factor)
+		if x.Cmp(SeoulDifficulty) < 0 {
+			x.Set(SeoulDifficulty)
+		}
+
+		//fmt.Printf("x : %v, Minimum difficulty : %v\n", x, MinimumDifficulty)
+		return x
+	}
+}
+
+
 
 // SearchLevel return next level by using currentDifficulty of header
 // Type of Ethereum difficulty is *bit.Int so arg is *big.int

@@ -42,6 +42,8 @@ var (
 	ByzantiumBlockReward      = big.NewInt(3e+18) // Block reward in wei for successfully mining a block upward from Byzantium
 	ConstantinopleBlockReward = big.NewInt(2e+18) // Block reward in wei for successfully mining a block upward from Constantinople
 	WorldLandBlockReward      = big.NewInt(4e+18) //Block reward in wei for successfully mining a block upward from WorldLand
+	BCAIBlockReward           = big.NewInt(4e+18) //Block reward in wei for successfully mining a block upward from WorldLand
+	
 	//WorldLandFirstBlockReward = big.NewInt(9e+18) //Block reward in wei for successfully mining a genesisblock upward from WorldLand
 
 	HALVING_INTERVAL  = uint64(6307200) //Block per year * 2year
@@ -316,10 +318,13 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 func (ecc *ECC) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	next := new(big.Int).Add(parent.Number, big1)
 	switch {
+	case chain.Config().IsBCAI(next):
+		return calcDifficultyBCAI(chain, time, parent)
 	case chain.Config().IsAnnapurna(next):
 		return calcDifficultyAnnapurna(chain, time, parent)
 	case chain.Config().IsSeoul(next):
 		return calcDifficultySeoul(chain, time, parent)
+	
 
 		//return calcDifficultyFrontier(time, parent)
 	default:
@@ -377,6 +382,12 @@ func calcDifficultySeoul(chain consensus.ChainHeaderReader, time uint64, parent 
 
 func calcDifficultyAnnapurna(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	difficultyCalculator := MakeLDPCDifficultyCalculatorAnnapurna()
+	//return difficultyCalculator(chain, time, parent)
+	return difficultyCalculator(time, parent)
+}
+
+func calcDifficultyBCAI(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
+	difficultyCalculator := MakeLDPCDifficultyCalculatorBCAI()
 	//return difficultyCalculator(chain, time, parent)
 	return difficultyCalculator(time, parent)
 }
@@ -531,6 +542,10 @@ func accumulateRewards(config *params.ChainConfig, state *state.StateDB, header 
 				blockReward.Div(blockReward, big.NewInt(100))
 			}	
 		}
+	}
+
+	if config.IsBCAI(header.Number) {
+		blockReward = BCAIBlockReward
 	}
 
 	// Accumulate the rewards for the miner and any included uncles

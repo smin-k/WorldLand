@@ -521,6 +521,7 @@ type ChainConfig struct {
 	HalvingEndTime       *big.Int `json:"HalvingEndTime,omitempty"`
 	SeoulBlock           *big.Int `json:"seoulBlock,omitempty"`
 	AnnapurnaBlock      *big.Int `json:"AnnapurnaBlock,omitempty"`
+	BCAIBlock      *big.Int `json:"BCAIBlock,omitempty"`
 
 	// TerminalTotalDifficulty is the amount of total difficulty reached by
 	// the network that triggers the consensus upgrade.
@@ -645,6 +646,9 @@ func (c *ChainConfig) String() string {
 	}*/
 	if c.AnnapurnaBlock != nil {
 		banner += fmt.Sprintf(" - Annapurna:                       %-8v\n", c.AnnapurnaBlock)
+	}
+	if c.BCAIBlock != nil {
+		banner += fmt.Sprintf(" - BCAI:                       %-8v\n", c.BCAIBlock)
 	}
 	banner += "\n"
     
@@ -780,6 +784,10 @@ func (c *ChainConfig) IsAnnapurna(num *big.Int) bool {
 	return isForked(c.AnnapurnaBlock, num)
 }
 
+func (c *ChainConfig) IsBCAI(num *big.Int) bool {
+	return isForked(c.BCAIBlock, num)
+}
+
 
 // CheckCompatible checks whether scheduled fork transitions have been imported
 // with a mismatching chain configuration.
@@ -829,6 +837,7 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "worldlandBlock", block: c.WorldlandBlock, optional: true},
 		{name: "seoulBlock", block: c.SeoulBlock, optional: true},
 		{name: "AnnapurnaBlock", block: c.AnnapurnaBlock, optional: true},
+		{name: "BCAIBlock", block: c.BCAIBlock, optional: true},
 	} {
 		if lastFork.name != "" {
 			// Next one must be higher number
@@ -921,6 +930,9 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 	}
 	if isForkIncompatible(c.AnnapurnaBlock, newcfg.AnnapurnaBlock, head) {
 		return newCompatError("Annapurna fork block", c.AnnapurnaBlock, newcfg.AnnapurnaBlock)
+	}
+	if isForkIncompatible(c.BCAIBlock, newcfg.BCAIBlock, head) {
+		return newCompatError("BCAI fork block", c.BCAIBlock, newcfg.BCAIBlock)
 	}
 
 	return nil
@@ -1016,7 +1028,8 @@ type Rules struct {
 	IsMerge, IsShanghai, isCancun                           bool
 	IsWorldland                                             bool
 	IsSeoul                                                 bool
-	IsAnnapurna                                            bool
+	IsAnnapurna                                             bool
+	IsBCAI                                                  bool
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -1042,6 +1055,7 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool) Rules {
 		isCancun:         c.IsCancun(num),
 		IsWorldland:      c.IsWorldland(num),
 		IsSeoul:          c.IsSeoul(num),
-		IsAnnapurna:     c.IsAnnapurna(num),
+		IsAnnapurna:      c.IsAnnapurna(num),
+		IsBCAI:           c.IsBCAI(num),
 	}
 }

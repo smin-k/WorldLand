@@ -1,0 +1,26 @@
+{
+    "config": {
+        "chainId": 331,
+        "homesteadBlock": 0,
+        "daoForkBlock": null,
+        "daoForkSupport": true,
+        "eip150Block": 0,
+        "eip155Block": 0,
+        "eip158Block": 0,
+        "byzantiumBlock": 0,
+        "constantinopleBlock": 0,
+        "petersburgBlock": 0,
+        "istanbulBlock": 0,
+        "berlinBlock": 0,
+        "londonBlock": 0,
+        "worldlandBlock": 0,
+        "seoulBlock": 0,
+        "annapurnaBlock": 0,
+        "bcaiBlock": 0,
+        "eccpow": { },
+    },
+    "difficulty": "1023",
+    "gasLimit": "2100000",
+    "alloc": {
+    }
+}

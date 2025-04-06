@@ -37,7 +37,7 @@ var (
 	Sensitivity         = big.NewInt(8)
 	SensitivityAnnapurna = big.NewInt(1024)
 	threshold = big.NewInt(7)
-	thresholdBCAI = big.NewInt(7) // 36) // 10 ) // 36)
+	thresholdBCAI = big.NewInt(21) // 36) // 10 ) // 36)
 
 	// BlockGenerationTime for Seoul
 	BlockGenerationTimeSeoul = big.NewInt(10) // 36) // 10 ) // 36)

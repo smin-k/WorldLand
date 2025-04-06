@@ -17,7 +17,7 @@
         "seoulBlock": 0,
         "annapurnaBlock": 0,
         "bcaiBlock": 0,
-        "eccpow": { },
+        "eccpow": {}
     },
     "difficulty": "1023",
     "gasLimit": "2100000",

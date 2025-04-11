@@ -35,11 +35,14 @@
 	# Copy the compiled worldland binary
 	COPY --from=builder /worldland/build/bin/worldland /usr/local/bin/
 	
-	# Expose standard blockchain ports
-	EXPOSE 8545 8546 30303 30303/udp
+	# Initialize blockchain state
+	RUN /usr/local/bin/worldland --datadir BCAInetwork init WorldLand_BCAI/BCAIgensis.json
 	
-	# Default entrypoint for the container
-	ENTRYPOINT ["worldland"]
+	# Expose necessary ports
+	EXPOSE 30303 8545
+	
+	# Set the entrypoint script
+	ENTRYPOINT ["/entrypoint.sh"]
 	
 	# --------------------------------------------
 	# ✅ Metadata labels for programmatic image tracking

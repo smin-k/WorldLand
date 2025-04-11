@@ -34,15 +34,20 @@
 	
 	# Copy the compiled worldland binary
 	COPY --from=builder /worldland/build/bin/worldland /usr/local/bin/
-	
+	# Copy the genesis file into the container
+	COPY BCAIgensis.json /workspace/BCAIgensis.json
+
 	# Initialize blockchain state
-	RUN /usr/local/bin/worldland --datadir BCAInetwork init WorldLand_BCAI/BCAIgensis.json
-	
+	RUN /usr/local/bin/worldland --datadir /workspace/BCAInetwork init /workspace/BCAIgensis.json
+
 	# Expose necessary ports
 	EXPOSE 30303 8545
 	
 	# Set the entrypoint script
-	ENTRYPOINT ["/entrypoint.sh"]
+	COPY entrypoint.sh /workspace/entrypoint.sh
+	RUN chmod +x /workspace/entrypoint.sh
+
+	ENTRYPOINT ["/workspace/entrypoint.sh"]
 	
 	# --------------------------------------------
 	# ✅ Metadata labels for programmatic image tracking
@@ -50,6 +55,5 @@
 	ARG COMMIT=""
 	ARG VERSION=""
 	ARG BUILDNUM=""
-	
 	LABEL commit="$COMMIT" version="$VERSION" buildnum="$BUILDNUM"
 	

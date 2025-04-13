@@ -7,7 +7,6 @@ exec /usr/local/bin/worldland \
     --networkid "$NETWORK_ID" \
     --datadir /workspace/BCAInetwork \
     --port 30303 \
-    --addr 0.0.0.0 \ 
     --http \
     --http.addr 0.0.0.0 \
     --http.corsdomain "*" \

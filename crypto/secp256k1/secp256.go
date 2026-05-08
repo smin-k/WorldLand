@@ -26,8 +26,10 @@ package secp256k1
 #define USE_FIELD_INV_BUILTIN
 #define USE_SCALAR_INV_BUILTIN
 #define NDEBUG
+#define ENABLE_MODULE_VRF
 #include "./libsecp256k1/src/secp256k1.c"
 #include "./libsecp256k1/src/modules/recovery/main_impl.h"
+#include "./libsecp256k1/include/secp256k1_vrf.h"
 #include "ext.h"
 
 typedef void (*callbackFunc) (const char* msg, void* data);

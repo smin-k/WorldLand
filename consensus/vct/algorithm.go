@@ -17,6 +17,7 @@ import (
 	"github.com/cryptoecc/WorldLand/consensus"
 	"github.com/cryptoecc/WorldLand/core/types"
 	"github.com/cryptoecc/WorldLand/crypto"
+	secp256k1 "github.com/cryptoecc/WorldLand/crypto/secp256k1"
 	"github.com/cryptoecc/WorldLand/log"
 	"github.com/cryptoecc/WorldLand/metrics"
 	"github.com/cryptoecc/WorldLand/rpc"
@@ -285,7 +286,7 @@ func (ecc *ECC) EnsureVRFKeys(coinbase common.Address) error {
 		return nil
 	}
 
-	seckey, pubkey, err := DeriveVRFKeys(coinbase, nil)
+	seckey, pubkey, err := secp256k1.DeriveVRFKeys(coinbase, nil)
 	if err != nil {
 		return fmt.Errorf("VCT: failed to derive VRF keys: %w", err)
 	}
@@ -299,7 +300,7 @@ func (ecc *ECC) EnsureVRFKeys(coinbase common.Address) error {
 // SetVRFKey sets an explicit secp256k1 private key (32 bytes) as the VRF key.
 // The public key is derived automatically. Useful when the miner controls their own key.
 func (ecc *ECC) SetVRFKey(seckey []byte) error {
-	pubkey, err := VRFPubkeyFromSeckey(seckey)
+	pubkey, err := secp256k1.VRFPubkeyFromSeckey(seckey)
 	if err != nil {
 		return fmt.Errorf("VCT: invalid VRF private key: %w", err)
 	}

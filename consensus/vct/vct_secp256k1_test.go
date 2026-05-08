@@ -55,9 +55,9 @@ func TestVCTVRFProveVerify(t *testing.T) {
 
 func TestVCTVRFDeriveKeys(t *testing.T) {
 	from := [20]byte{1, 2, 3, 4, 5}
-	seckey, pubkey, err := DeriveVRFKeys(from, nil)
+	seckey, pubkey, err := secp256k1pkg.DeriveVRFKeys(from, nil)
 	if err != nil {
-		t.Fatalf("DeriveVRFKeys failed: %v", err)
+		t.Fatalf("secp256k1pkg.DeriveVRFKeys failed: %v", err)
 	}
 	if len(seckey) != 32 {
 		t.Fatalf("seckey length wrong: got %d", len(seckey))
@@ -67,12 +67,12 @@ func TestVCTVRFDeriveKeys(t *testing.T) {
 	}
 
 	// Derived keys must be deterministic
-	seckey2, pubkey2, err := DeriveVRFKeys(from, nil)
+	seckey2, pubkey2, err := secp256k1pkg.DeriveVRFKeys(from, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(seckey, seckey2) || !bytes.Equal(pubkey, pubkey2) {
-		t.Fatal("DeriveVRFKeys is not deterministic")
+		t.Fatal("secp256k1pkg.DeriveVRFKeys is not deterministic")
 	}
 }
 

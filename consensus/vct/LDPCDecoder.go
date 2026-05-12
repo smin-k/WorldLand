@@ -1,7 +1,6 @@
 ﻿package vct
 
 import (
-	"encoding/binary"
 	"math"
 
 	"github.com/cryptoecc/WorldLand/core/types"
@@ -161,48 +160,40 @@ func OptimizedDecodingSeoul(parameters Parameters, hashVector []int, H, rowInCol
 }
 
 
-//VerifyOptimizedDecoding return bool, hashVector, outputword, digest which are used for validation
+// VerifyOptimizedDecoding verifies an ECCPoW solution given a raw seed hash.
 func VerifyOptimizedDecoding(header *types.Header, hash []byte) (bool, []int, []int, []byte) {
 	parameters, _ := setParameters(header)
 	H := generateH(parameters)
 	colInRow, rowInCol := generateQ(parameters, H)
 
-	seed := make([]byte, 40)
-	copy(seed, hash)
-	binary.LittleEndian.PutUint64(seed[32:], header.Nonce.Uint64())
-	seed = crypto.Keccak512(seed)
+	seed := crypto.Keccak512(hash)
 
 	hashVector := generateHv(parameters, seed)
 	hashVectorOfVerification, outputWordOfVerification, _ := OptimizedDecoding(parameters, hashVector, H, rowInCol, colInRow)
-	//hashVectorOfVerification, outputWordOfVerification, _ := OptimizedDecodingSeoul(parameters, hashVector, H, rowInCol, colInRow)
 
-	flag , _ := MakeDecision(header, colInRow, outputWordOfVerification)
-	
-	if  flag {
+	flag, _ := MakeDecision(header, colInRow, outputWordOfVerification)
+
+	if flag {
 		return true, hashVectorOfVerification, outputWordOfVerification, seed
 	}
 
 	return false, hashVectorOfVerification, outputWordOfVerification, seed
 }
 
-//VerifyOptimizedDecoding return bool, hashVector, outputword, digest which are used for validation
+// VerifyOptimizedDecodingSeoul verifies a Seoul-era ECCPoW solution given a raw seed hash.
 func VerifyOptimizedDecodingSeoul(header *types.Header, hash []byte) (bool, []int, []int, []byte) {
 	parameters, _ := setParameters_Seoul(header)
 	H := generateH(parameters)
 	colInRow, rowInCol := generateQ(parameters, H)
 
-	seed := make([]byte, 40)
-	copy(seed, hash)
-	binary.LittleEndian.PutUint64(seed[32:], header.Nonce.Uint64())
-	seed = crypto.Keccak512(seed)
+	seed := crypto.Keccak512(hash)
 
 	hashVector := generateHv(parameters, seed)
-	//hashVectorOfVerification, outputWordOfVerification, _ := OptimizedDecoding(parameters, hashVector, H, rowInCol, colInRow)
 	hashVectorOfVerification, outputWordOfVerification, _ := OptimizedDecodingSeoul(parameters, hashVector, H, rowInCol, colInRow)
 
-	flag , _ := MakeDecision_Seoul(header, colInRow, outputWordOfVerification)
-	
-	if  flag {
+	flag, _ := MakeDecision_Seoul(header, colInRow, outputWordOfVerification)
+
+	if flag {
 		return true, hashVectorOfVerification, outputWordOfVerification, seed
 	}
 

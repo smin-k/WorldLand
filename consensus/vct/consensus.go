@@ -16,6 +16,7 @@ import (
 	"github.com/cryptoecc/WorldLand/consensus/misc"
 	"github.com/cryptoecc/WorldLand/core/state"
 	"github.com/cryptoecc/WorldLand/core/types"
+	"github.com/cryptoecc/WorldLand/crypto"
 	"github.com/cryptoecc/WorldLand/log"
 	"github.com/cryptoecc/WorldLand/params"
 	"github.com/cryptoecc/WorldLand/rlp"
@@ -231,10 +232,14 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 		return consensus.ErrInvalidNumber
 	}
 	if seal {
+		isVCT := chain.Config().IsVCT(header.Number)
 		if err := ecc.verifySeal(chain, header); err != nil {
 			return err
 		}
 		if err := ecc.verifyVRFProof(chain, header); err != nil {
+			return err
+		}
+		if err := ecc.verifyMiningSig(header, ecc.SealHash(header).Bytes(), isVCT); err != nil {
 			return err
 		}
 	}
@@ -257,13 +262,30 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header *types.
 	}
 
 	blockNumber := header.Number.Uint64()
-	seedHash := ecc.GetSortitionSeedHash(chain, blockNumber)
-	if seedHash == (common.Hash{}) {
-		log.Warn("VCT: VRF verification failed - seed block unavailable", "block", blockNumber)
-		return errors.New("VCT: sortition seed block unavailable")
+
+	var msg []byte
+	if chain.Config().IsVCT(header.Number) {
+		// WIP-6: verify Address(VRFPublicKey) == Coinbase
+		pub, err := crypto.DecompressPubkey(header.VRFPublicKey)
+		if err != nil {
+			return fmt.Errorf("VCT: failed to decompress VRF public key: %w", err)
+		}
+		vrfAddr := crypto.PubkeyToAddress(*pub)
+		if vrfAddr != header.Coinbase {
+			return fmt.Errorf("VCT: VRF public key address %v != coinbase %v", vrfAddr, header.Coinbase)
+		}
+		// WIP-6: VRF message = VCT_VRF || chainId || phash_{h-1} || h
+		chainIDBytes := ecc.chainIDBytes()
+		msg = computeVRFMsg(chainIDBytes, header.ParentHash.Bytes(), blockNumber)
+	} else {
+		seedHash := ecc.GetSortitionSeedHash(chain, blockNumber)
+		if seedHash == (common.Hash{}) {
+			log.Warn("VCT: VRF verification failed - seed block unavailable", "block", blockNumber)
+			return errors.New("VCT: sortition seed block unavailable")
+		}
+		msg = seedHash.Bytes()
 	}
 
-	msg := seedHash.Bytes()
 	if _, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg); err != nil {
 		return fmt.Errorf("VCT: VRF proof invalid: %w", err)
 	}
@@ -330,14 +352,28 @@ func (ecc *ECC) verifySeal(chain consensus.ChainHeaderReader, header *types.Head
 		return errInvalidDifficulty
 	}
 
+	if chain.Config().ChainID != nil {
+		ecc.lock.Lock()
+		ecc.chainID = chain.Config().ChainID
+		ecc.lock.Unlock()
+	}
+
+	sealHash := ecc.SealHash(header).Bytes()
+	var powSeed []byte
+	if chain.Config().IsVCT(header.Number) {
+		powSeed = computePowSeedVCT(sealHash, header.Nonce.Uint64(), header.VRFSignature)
+	} else {
+		powSeed = computePowSeed(ecc.chainIDBytes(), sealHash, header.Nonce.Uint64(), header.VRFSignature)
+	}
+
 	var (
 		digest []byte
 		flag   bool
 	)
 	if chain.Config().IsSeoul(header.Number) {
-		flag, _, _, digest = VerifyOptimizedDecodingSeoul(header, ecc.SealHash(header).Bytes())
+		flag, _, _, digest = VCTVerifyOptimizedDecodingSeoul(header, powSeed)
 	} else {
-		flag, _, _, digest = VerifyOptimizedDecoding(header, ecc.SealHash(header).Bytes())
+		flag, _, _, digest = VCTVerifyOptimizedDecoding(header, powSeed)
 	}
 
 	encodedDigest := common.BytesToHash(digest)
@@ -356,6 +392,11 @@ func (ecc *ECC) Prepare(chain consensus.ChainHeaderReader, header *types.Header)
 		return consensus.ErrUnknownAncestor
 	}
 	header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parent)
+	if chain.Config().ChainID != nil {
+		ecc.lock.Lock()
+		ecc.chainID = chain.Config().ChainID
+		ecc.lock.Unlock()
+	}
 	return nil
 }
 
@@ -371,6 +412,10 @@ func (ecc *ECC) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header *t
 
 func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 	hasher := sha3.NewLegacyKeccak256()
+	// VCT_SEAL domain prefix + chain ID for domain separation.
+	hasher.Write([]byte("VCT_SEAL"))
+	hasher.Write(ecc.chainIDBytes())
+	// Block template fields: excludes Nonce, MixDigest, Codeword, VRFSignature.
 	enc := []interface{}{
 		header.ParentHash, header.UncleHash, header.Coinbase,
 		header.Root, header.TxHash, header.ReceiptHash,
@@ -380,9 +425,41 @@ func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 	if header.BaseFee != nil {
 		enc = append(enc, header.BaseFee)
 	}
+	enc = append(enc, header.CodeLength)
+	if len(header.VRFPublicKey) > 0 {
+		enc = append(enc, header.VRFPublicKey)
+	}
+	if len(header.VRFProof) > 0 {
+		enc = append(enc, header.VRFProof)
+	}
 	rlp.Encode(hasher, enc)
 	hasher.Sum(hash[:0])
 	return hash
+}
+
+// verifyMiningSig checks that header.VRFSignature is a valid per-nonce mining
+// signature by the block's coinbase: ECRecover(σ_ν, m_ν) = coinbase.
+// WIP-6 (isVCT=true): m_ν = Keccak256(VCT_MINE || sealHash || nonce).
+// Pre-WIP-6:          m_ν = Keccak256(VCT_MINE || chainId || sealHash || nonce).
+func (ecc *ECC) verifyMiningSig(header *types.Header, sealHash []byte, isVCT bool) error {
+	if len(header.VRFSignature) != 65 {
+		return fmt.Errorf("VCT: VRFSignature must be 65 bytes, got %d", len(header.VRFSignature))
+	}
+	var msgHash []byte
+	if isVCT {
+		msgHash = computeMiningSigMsgVCT(sealHash, header.Nonce.Uint64())
+	} else {
+		msgHash = computeMiningSigMsg(ecc.chainIDBytes(), sealHash, header.Nonce.Uint64())
+	}
+	pub, err := crypto.SigToPub(msgHash, header.VRFSignature)
+	if err != nil {
+		return fmt.Errorf("VCT: mining sig recovery failed: %w", err)
+	}
+	addr := crypto.PubkeyToAddress(*pub)
+	if addr != header.Coinbase {
+		return fmt.Errorf("VCT: mining sig signer %v != coinbase %v", addr, header.Coinbase)
+	}
+	return nil
 }
 
 var (

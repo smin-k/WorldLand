@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,7 +56,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 	}
 
 	blockNumber := block.Header().Number.Uint64()
-	eligible, proof, err := ecc.IsEligibleForBlock(chain, blockNumber)
+	eligible, proof, err := ecc.IsEligibleForBlock(chain, blockNumber, block.Header().ParentHash)
 	if err != nil {
 		return fmt.Errorf("VCT: sortition check failed: %w", err)
 	}
@@ -105,14 +104,15 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		pend   sync.WaitGroup
 		locals = make(chan *types.Block)
 	)
+	isVCT := chain.Config().IsVCT(block.Header().Number)
 	for i := 0; i < threads; i++ {
 		pend.Add(1)
 		go func(id int, nonce uint64) {
 			defer pend.Done()
 			if chain.Config().IsSeoul(block.Header().Number) {
-				ecc.mine_seoul(block, id, nonce, abort, locals)
+				ecc.mine_seoul(block, id, nonce, abort, locals, isVCT)
 			} else {
-				ecc.mine(block, id, nonce, abort, locals)
+				ecc.mine(block, id, nonce, abort, locals, isVCT)
 			}
 		}(i, uint64(ecc.rand.Int63()))
 	}
@@ -140,62 +140,32 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 	return nil
 }
 
-func (ecc *ECC) mine(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block) {
-	var (
-		header = block.Header()
-		hash   = ecc.SealHash(header).Bytes()
-	)
+func (ecc *ECC) mine(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block, isVCT bool) {
+	ecc.lock.Lock()
+	seckey := make([]byte, len(ecc.vrfSecKey))
+	copy(seckey, ecc.vrfSecKey)
+	ecc.lock.Unlock()
+
+	header := block.Header()
+	sealHash := ecc.SealHash(header).Bytes()
+
+	prv, err := crypto.ToECDSA(seckey)
+	if err != nil {
+		log.Error("VCT: mine: invalid VRF key", "err", err)
+		return
+	}
+
+	parameters, _ := setParameters(header)
+	H := generateH(parameters)
+	colInRow, rowInCol := generateQ(parameters, H)
+
 	var (
 		attempts int64
 		nonce    = seed
+		chainID  = ecc.chainIDBytes()
 	)
 	logger := log.New("miner", id)
 	logger.Trace("VCT: started nonce search", "seed", seed)
-
-search:
-	for {
-		select {
-		case <-abort:
-			logger.Trace("VCT: nonce search aborted", "attempts", nonce-seed)
-			ecc.hashrate.Mark(attempts)
-			break search
-		default:
-			attempts += 64
-			if attempts%(1<<15) == 0 {
-				ecc.hashrate.Mark(attempts)
-				attempts = 0
-			}
-			flag, _, outputWord, LDPCNonce, digest := RunOptimizedConcurrencyLDPC(header, hash)
-			if flag {
-				header = types.CopyHeader(header)
-				header.MixDigest = common.BytesToHash(digest)
-				header.Nonce = types.EncodeNonce(LDPCNonce)
-				header.Codeword = packCodeword(outputWord)
-				select {
-				case found <- block.WithSeal(header):
-				case <-abort:
-				}
-				break search
-			}
-		}
-	}
-}
-
-func (ecc *ECC) mine_seoul(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block) {
-	var (
-		header = block.Header()
-		hash   = ecc.SealHash(header).Bytes()
-	)
-	var (
-		attempts int64
-		nonce    = seed
-	)
-	logger := log.New("miner", id)
-	logger.Trace("VCT: started Seoul nonce search", "seed", seed)
-
-	parameters, _ := setParameters_Seoul(header)
-	H := generateH(parameters)
-	colInRow, rowInCol := generateQ(parameters, H)
 
 search:
 	for {
@@ -210,10 +180,108 @@ search:
 				ecc.hashrate.Mark(attempts)
 				attempts = 0
 			}
-			digest := make([]byte, 40)
-			copy(digest, hash)
-			binary.LittleEndian.PutUint64(digest[32:], nonce)
-			digest = crypto.Keccak512(digest)
+
+			var sigHash []byte
+			if isVCT {
+				sigHash = computeMiningSigMsgVCT(sealHash, nonce)
+			} else {
+				sigHash = computeMiningSigMsg(chainID, sealHash, nonce)
+			}
+			sigma, serr := crypto.Sign(sigHash, prv)
+			if serr != nil {
+				logger.Warn("VCT: mining sign failed", "err", serr)
+				nonce++
+				continue
+			}
+
+			var powSeed []byte
+			if isVCT {
+				powSeed = computePowSeedVCT(sealHash, nonce, sigma)
+			} else {
+				powSeed = computePowSeed(chainID, sealHash, nonce, sigma)
+			}
+			digest := crypto.Keccak512(powSeed)
+
+			hv := generateHv(parameters, digest)
+			hv, ow, _ := OptimizedDecoding(parameters, hv, H, rowInCol, colInRow)
+			if ok, _ := MakeDecision(header, colInRow, ow); ok {
+				header = types.CopyHeader(header)
+				header.MixDigest = common.BytesToHash(digest)
+				header.Nonce = types.EncodeNonce(nonce)
+				header.Codeword = packCodeword(ow)
+				header.VRFSignature = sigma
+				select {
+				case found <- block.WithSeal(header):
+				case <-abort:
+				}
+				break search
+			}
+			nonce++
+		}
+	}
+}
+
+func (ecc *ECC) mine_seoul(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block, isVCT bool) {
+	ecc.lock.Lock()
+	seckey := make([]byte, len(ecc.vrfSecKey))
+	copy(seckey, ecc.vrfSecKey)
+	ecc.lock.Unlock()
+
+	header := block.Header()
+	sealHash := ecc.SealHash(header).Bytes()
+
+	prv, err := crypto.ToECDSA(seckey)
+	if err != nil {
+		log.Error("VCT: mine_seoul: invalid VRF key", "err", err)
+		return
+	}
+
+	parameters, _ := setParameters_Seoul(header)
+	H := generateH(parameters)
+	colInRow, rowInCol := generateQ(parameters, H)
+
+	var (
+		attempts int64
+		nonce    = seed
+		chainID  = ecc.chainIDBytes()
+	)
+	logger := log.New("miner", id)
+	logger.Trace("VCT: started Seoul nonce search", "seed", seed)
+
+search:
+	for {
+		select {
+		case <-abort:
+			logger.Trace("VCT: nonce search aborted", "attempts", nonce-seed)
+			ecc.hashrate.Mark(attempts)
+			break search
+		default:
+			attempts++
+			if attempts%(1<<15) == 0 {
+				ecc.hashrate.Mark(attempts)
+				attempts = 0
+			}
+
+			var sigHash []byte
+			if isVCT {
+				sigHash = computeMiningSigMsgVCT(sealHash, nonce)
+			} else {
+				sigHash = computeMiningSigMsg(chainID, sealHash, nonce)
+			}
+			sigma, serr := crypto.Sign(sigHash, prv)
+			if serr != nil {
+				logger.Warn("VCT: mining sign failed", "err", serr)
+				nonce++
+				continue
+			}
+
+			var powSeed []byte
+			if isVCT {
+				powSeed = computePowSeedVCT(sealHash, nonce, sigma)
+			} else {
+				powSeed = computePowSeed(chainID, sealHash, nonce, sigma)
+			}
+			digest := crypto.Keccak512(powSeed)
 
 			hv := generateHv(parameters, digest)
 			hv, ow, _ := OptimizedDecodingSeoul(parameters, hv, H, rowInCol, colInRow)
@@ -223,6 +291,7 @@ search:
 				header.MixDigest = common.BytesToHash(digest)
 				header.Nonce = types.EncodeNonce(nonce)
 				header.Codeword = packCodeword(ow)
+				header.VRFSignature = sigma
 				select {
 				case found <- block.WithSeal(header):
 				case <-abort:

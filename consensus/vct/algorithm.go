@@ -49,8 +49,77 @@ type ECC struct {
 	vrfPubKey   []byte
 	vrfCoinbase common.Address
 
+	// chainID for domain-separated mining signatures and powSeed
+	chainID *big.Int
+
 	lock      sync.Mutex
 	closeOnce sync.Once
+}
+
+// chainIDBytes returns a 32-byte big-endian chain ID, or zeros if not configured.
+func (ecc *ECC) chainIDBytes() []byte {
+	ecc.lock.Lock()
+	defer ecc.lock.Unlock()
+	b := make([]byte, 32)
+	if ecc.chainID != nil {
+		ecc.chainID.FillBytes(b)
+	}
+	return b
+}
+
+// computeMiningSigMsg returns Keccak256(VCT_MINE || chainId || sealHash || nonce_LE8).
+// This is the pre-WIP-6 message that the miner signs per ECCPoW nonce trial.
+func computeMiningSigMsg(chainIDBytes, sealHash []byte, nonce uint64) []byte {
+	msg := make([]byte, 8+32+32+8)
+	copy(msg[:8], "VCT_MINE")
+	copy(msg[8:40], chainIDBytes)
+	copy(msg[40:72], sealHash)
+	binary.LittleEndian.PutUint64(msg[72:80], nonce)
+	return crypto.Keccak256(msg)
+}
+
+// computeMiningSigMsgVCT returns Keccak256(VCT_MINE || sealHash || nonce_LE8).
+// WIP-6 formula: chainId removed since it is already committed in sealHash.
+func computeMiningSigMsgVCT(sealHash []byte, nonce uint64) []byte {
+	msg := make([]byte, 8+32+8)
+	copy(msg[:8], "VCT_MINE")
+	copy(msg[8:40], sealHash)
+	binary.LittleEndian.PutUint64(msg[40:48], nonce)
+	return crypto.Keccak256(msg)
+}
+
+// computePowSeed returns Keccak256(VCT_ECCPOW || chainId || sealHash || nonce_LE8 || sigma).
+// This is the pre-WIP-6 32-byte seed for Keccak512 → LDPC hash vector generation.
+func computePowSeed(chainIDBytes, sealHash []byte, nonce uint64, sigma []byte) []byte {
+	raw := make([]byte, 10+32+32+8+len(sigma))
+	copy(raw[:10], "VCT_ECCPOW")
+	copy(raw[10:42], chainIDBytes)
+	copy(raw[42:74], sealHash)
+	binary.LittleEndian.PutUint64(raw[74:82], nonce)
+	copy(raw[82:], sigma)
+	return crypto.Keccak256(raw)
+}
+
+// computePowSeedVCT returns Keccak256(VCT_ECCPOW || sealHash || nonce_LE8 || sigma).
+// WIP-6 formula: chainId removed since it is already committed in sealHash.
+func computePowSeedVCT(sealHash []byte, nonce uint64, sigma []byte) []byte {
+	raw := make([]byte, 10+32+8+len(sigma))
+	copy(raw[:10], "VCT_ECCPOW")
+	copy(raw[10:42], sealHash)
+	binary.LittleEndian.PutUint64(raw[42:50], nonce)
+	copy(raw[50:], sigma)
+	return crypto.Keccak256(raw)
+}
+
+// computeVRFMsg returns the WIP-6 VRF input message:
+// VCT_VRF || chainId (32 bytes) || phash_{h-1} (32 bytes) || h (8 bytes BE).
+func computeVRFMsg(chainIDBytes, parentHash []byte, blockNumber uint64) []byte {
+	msg := make([]byte, 7+32+32+8)
+	copy(msg[:7], "VCT_VRF")
+	copy(msg[7:39], chainIDBytes)
+	copy(msg[39:71], parentHash)
+	binary.BigEndian.PutUint64(msg[71:79], blockNumber)
+	return msg
 }
 
 type Mode uint
@@ -250,8 +319,9 @@ func (ecc *ECC) GetSortitionSeedHash(chain consensus.ChainHeaderReader, blockNum
 }
 
 // IsEligibleForBlock checks VRF sortition eligibility for blockNumber.
+// parentHash is the ParentHash of the block being mined.
 // Returns (eligible, proofBytes, error).
-func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumber uint64) (bool, []byte, error) {
+func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumber uint64, parentHash common.Hash) (bool, []byte, error) {
 	ecc.lock.Lock()
 	defer ecc.lock.Unlock()
 
@@ -259,13 +329,21 @@ func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumbe
 		return false, nil, errors.New("VCT: VRF keys not configured")
 	}
 
-	seedHash := ecc.GetSortitionSeedHash(chain, blockNumber)
-	if seedHash == (common.Hash{}) {
-		return false, nil, errors.New("VCT: could not get sortition seed hash")
+	var msg []byte
+	if chain.Config().IsVCT(new(big.Int).SetUint64(blockNumber)) {
+		// WIP-6: VRF message = VCT_VRF || chainId || phash_{h-1} || h
+		chainIDBytes := make([]byte, 32)
+		if ecc.chainID != nil {
+			ecc.chainID.FillBytes(chainIDBytes)
+		}
+		msg = computeVRFMsg(chainIDBytes, parentHash.Bytes(), blockNumber)
+	} else {
+		seedHash := ecc.GetSortitionSeedHash(chain, blockNumber)
+		if seedHash == (common.Hash{}) {
+			return false, nil, errors.New("VCT: could not get sortition seed hash")
+		}
+		msg = seedHash.Bytes()
 	}
-
-	// VRF message: "VCT_VRF" | chainId (not available here, use seedHash directly)
-	msg := seedHash.Bytes()
 
 	proof, _, err := VRFProve(ecc.vrfSecKey, ecc.vrfPubKey, msg)
 	if err != nil {

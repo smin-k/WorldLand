@@ -94,6 +94,8 @@ type Header struct {
 	VRFProof []byte `json:"vrfProof" rlp:"optional"`
 	// VRFPublicKey was added for VRF verification and is ignored in legacy headers.
 	VRFPublicKey []byte `json:"vrfPublicKey" rlp:"optional"`
+	// VRFSignature is the per-nonce ECDSA mining signature (65 bytes) for anti-delegation.
+	VRFSignature []byte `json:"vrfSignature" rlp:"optional"`
 
 	/*
 		TODO (MariusVanDerWijden) Add this field once needed

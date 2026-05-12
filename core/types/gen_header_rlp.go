@@ -82,6 +82,14 @@ func (obj *Header) EncodeRLP(_w io.Writer) error {
 			w.WriteBytes(obj.VRFPublicKey)
 		}
 	}
+	_tmp5 := obj.VRFSignature != nil
+	if _tmp5 {
+		if obj.VRFSignature == nil {
+			w.Write(rlp.EmptyString)
+		} else {
+			w.WriteBytes(obj.VRFSignature)
+		}
+	}
 	w.ListEnd(_tmp0)
 	return w.Flush()
 }

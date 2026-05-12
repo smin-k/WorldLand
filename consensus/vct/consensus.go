@@ -415,7 +415,11 @@ func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 	// VCT_SEAL domain prefix + chain ID for domain separation.
 	hasher.Write([]byte("VCT_SEAL"))
 	hasher.Write(ecc.chainIDBytes())
-	// Block template fields: excludes Nonce, MixDigest, Codeword, VRFSignature.
+	// Block template fields only. Excluded (all set during Seal/mining):
+	//   Nonce, MixDigest, Codeword — PoW outputs
+	//   VRFPublicKey, VRFProof     — filled in by Seal() before mining starts
+	//   VRFSignature               — per-nonce mining signature
+	//   CodeLength                 — derived from difficulty by mine_seoul and written back
 	enc := []interface{}{
 		header.ParentHash, header.UncleHash, header.Coinbase,
 		header.Root, header.TxHash, header.ReceiptHash,
@@ -424,13 +428,6 @@ func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 	}
 	if header.BaseFee != nil {
 		enc = append(enc, header.BaseFee)
-	}
-	enc = append(enc, header.CodeLength)
-	if len(header.VRFPublicKey) > 0 {
-		enc = append(enc, header.VRFPublicKey)
-	}
-	if len(header.VRFProof) > 0 {
-		enc = append(enc, header.VRFProof)
 	}
 	rlp.Encode(hasher, enc)
 	hasher.Sum(hash[:0])

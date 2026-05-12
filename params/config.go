@@ -38,7 +38,7 @@ var (
 	GwangjuGenesisHash = common.HexToHash("0x64130a2624d46bda6aacf0c1ec34ab3d926e31b8438141a10e7412070064f0bf")
 	MioGenesisHash     = common.HexToHash("")
 	BetaGenesisHash    = common.HexToHash("") // To be filled after genesis block creation
-	DaejeonGenesisHash = common.HexToHash("") // To be filled after first geth --daejeon init
+	DaejeonGenesisHash = common.HexToHash("0x1b6069b67f54ea9031807160799b980c5accb8dbd2d938318aa033dbea9949bf")
 )
 
 // TrustedCheckpoints associates each known checkpoint with the genesis hash of
@@ -364,7 +364,7 @@ var (
 		AnnapurnaBlock:      big.NewInt(0),
 		VCTBlock:            big.NewInt(0),
 		HalvingEndTime:      big.NewInt(25228800),
-		Eccpow:              new(EccpowConfig),
+		Vct:                 new(VctConfig),
 	}
 
 	MioChainConfig = &ChainConfig{
@@ -483,16 +483,16 @@ var (
 	//
 	// This configuration is intentionally not using keyed fields to force anyone
 	// adding flags to the config to also have to set these fields.
-	AllEthashProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, new(EthashConfig), nil, nil, nil, nil}
+	AllEthashProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, new(EthashConfig), nil, nil, nil, nil, nil}
 
 	// AllCliqueProtocolChanges contains every protocol change (EIPs) introduced
 	// and accepted by the Ethereum core developers into the Clique consensus.
 	//
 	// This configuration is intentionally not using keyed fields to force anyone
 	// adding flags to the config to also have to set these fields.
-	AllCliqueProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, nil, &CliqueConfig{Period: 0, Epoch: 30000}, nil, nil, nil}
+	AllCliqueProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, nil, &CliqueConfig{Period: 0, Epoch: 30000}, nil, nil, nil, nil}
 
-	TestChainConfig = &ChainConfig{big.NewInt(1), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, new(EthashConfig), nil, nil, nil, nil}
+	TestChainConfig = &ChainConfig{big.NewInt(1), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, new(EthashConfig), nil, nil, nil, nil, nil}
 	//NonActivatedConfig = &ChainConfig{big.NewInt(1), nil, nil, false, nil, common.Hash{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, new(EthashConfig), nil, nil}
 	TestRules = TestChainConfig.Rules(new(big.Int), false)
 )
@@ -615,6 +615,7 @@ type ChainConfig struct {
 	Eccpow  *EccpowConfig  `json:"eccpow,omitempty"`
 	Kaiju   *KaijuConfig   `json:"kaiju,omitempty"`
 	Eccbeta *EccbetaConfig `json:"eccbeta,omitempty"`
+	Vct     *VctConfig     `json:"vct,omitempty"` // WIP-6 VCT engine (superset of ECCPoW)
 }
 
 // EthashConfig is the consensus engine configs for proof-of-work based sealing.
@@ -628,6 +629,9 @@ type KaijuConfig struct{}
 
 // EccbetaConfig is the consensus engine configs for Beta network proof-of-work.
 type EccbetaConfig struct{}
+
+// VctConfig is the consensus engine config for the VCT (WIP-6) network.
+type VctConfig struct{}
 
 
 // String implements the stringer interface, returning the consensus engine details.

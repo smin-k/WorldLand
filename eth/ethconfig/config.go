@@ -33,6 +33,7 @@ import (
 	"github.com/cryptoecc/WorldLand/consensus/eccpow"
 	"github.com/cryptoecc/WorldLand/consensus/ethash"
 	"github.com/cryptoecc/WorldLand/consensus/kaiju"
+	"github.com/cryptoecc/WorldLand/consensus/vct"
 	"github.com/cryptoecc/WorldLand/core"
 	"github.com/cryptoecc/WorldLand/eth/downloader"
 	"github.com/cryptoecc/WorldLand/eth/gasprice"
@@ -225,11 +226,14 @@ type Config struct {
 }
 
 // CreateConsensusEngine creates a consensus engine for the given chain configuration.
-func CreateConsensusEngine(stack *node.Node, ethashConfig *ethash.Config, cliqueConfig *params.CliqueConfig, eccpowConfig *params.EccpowConfig, kaijuConfig *params.KaijuConfig, eccbetaConfig *params.EccbetaConfig, notify []string, noverify bool, db ethdb.Database) consensus.Engine {
+func CreateConsensusEngine(stack *node.Node, ethashConfig *ethash.Config, cliqueConfig *params.CliqueConfig, eccpowConfig *params.EccpowConfig, kaijuConfig *params.KaijuConfig, eccbetaConfig *params.EccbetaConfig, vctConfig *params.VctConfig, notify []string, noverify bool, db ethdb.Database) consensus.Engine {
 	// If proof-of-authority is requested, set it up
 	var engine consensus.Engine
 	if cliqueConfig != nil {
 		engine = clique.New(cliqueConfig, db)
+	} else if vctConfig != nil {
+		engine = vct.New(vct.Config{}, notify, noverify)
+		log.Info("Creating VCT consensus engine")
 	} else if eccbetaConfig != nil {
 		engine = eccbeta.New(eccbeta.Config{}, notify, noverify)
 		log.Info("Creating ECCBeta consensus engine")

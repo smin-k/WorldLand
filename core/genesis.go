@@ -484,6 +484,26 @@ func LoadEccbetaConfig(db ethdb.Database, genesis *Genesis) (*params.EccbetaConf
 	return nil, nil
 }
 
+func LoadVctConfig(db ethdb.Database, genesis *Genesis) (*params.VctConfig, error) {
+	stored := rawdb.ReadCanonicalHash(db, 0)
+	if stored != (common.Hash{}) {
+		storedcfg := rawdb.ReadChainConfig(db, stored)
+		if storedcfg != nil {
+			return storedcfg.Vct, nil
+		}
+	}
+	if genesis != nil {
+		if genesis.Config == nil {
+			return nil, errGenesisNoConfig
+		}
+		if stored != (common.Hash{}) && genesis.ToBlock().Hash() != stored {
+			return nil, &GenesisMismatchError{stored, genesis.ToBlock().Hash()}
+		}
+		return genesis.Config.Vct, nil
+	}
+	return nil, nil
+}
+
 func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 	switch {
 	case g != nil:

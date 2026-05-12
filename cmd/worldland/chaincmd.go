@@ -166,23 +166,34 @@ This command dumps out the state for a given block (or latest, if none provided)
 
 // initGenesis will initialise the given JSON format genesis file and writes it as
 // the zero'd block (i.e. genesis) or will fail hard if it can't succeed.
+// When a network flag (e.g. --daejeon) is set and no file argument is given,
+// the built-in genesis for that network is used.
 func initGenesis(ctx *cli.Context) error {
-	if ctx.Args().Len() != 1 {
-		utils.Fatalf("need genesis.json file as the only argument")
-	}
-	genesisPath := ctx.Args().First()
-	if len(genesisPath) == 0 {
-		utils.Fatalf("invalid path to genesis file")
-	}
-	file, err := os.Open(genesisPath)
-	if err != nil {
-		utils.Fatalf("Failed to read genesis file: %v", err)
-	}
-	defer file.Close()
+	var genesis *core.Genesis
 
-	genesis := new(core.Genesis)
-	if err := json.NewDecoder(file).Decode(genesis); err != nil {
-		utils.Fatalf("invalid genesis file: %v", err)
+	if ctx.Args().Len() == 0 {
+		genesis = utils.MakeGenesis(ctx)
+		if genesis == nil {
+			utils.Fatalf("need genesis.json file as the only argument")
+		}
+		log.Info("Using built-in genesis for network flag")
+	} else if ctx.Args().Len() == 1 {
+		genesisPath := ctx.Args().First()
+		if len(genesisPath) == 0 {
+			utils.Fatalf("invalid path to genesis file")
+		}
+		file, err := os.Open(genesisPath)
+		if err != nil {
+			utils.Fatalf("Failed to read genesis file: %v", err)
+		}
+		defer file.Close()
+
+		genesis = new(core.Genesis)
+		if err := json.NewDecoder(file).Decode(genesis); err != nil {
+			utils.Fatalf("invalid genesis file: %v", err)
+		}
+	} else {
+		utils.Fatalf("too many arguments — provide a genesis.json path or use a network flag with no argument")
 	}
 	// Open and initialise both full and light databases
 	stack, _ := makeConfigNode(ctx)

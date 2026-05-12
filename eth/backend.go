@@ -155,12 +155,17 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		return nil, err
 	}
 
+	vctConfig, err := core.LoadVctConfig(chainDb, config.Genesis)
+	if err != nil {
+		return nil, err
+	}
+
 	cliqueConfig, err := core.LoadCliqueConfig(chainDb, config.Genesis)
 	if err != nil {
 		return nil, err
 	}
 
-	engine := ethconfig.CreateConsensusEngine(stack, &ethashConfig, cliqueConfig, eccpowConfig, kaijuConfig, eccbetaConfig, config.Miner.Notify, config.Miner.Noverify, chainDb)
+	engine := ethconfig.CreateConsensusEngine(stack, &ethashConfig, cliqueConfig, eccpowConfig, kaijuConfig, eccbetaConfig, vctConfig, config.Miner.Notify, config.Miner.Noverify, chainDb)
 
 	eth := &Ethereum{
 		config:            config,
@@ -497,6 +502,10 @@ func (s *Ethereum) StartMining(threads int) error {
 		var vctEngine *vct.ECC
 		if e, ok := s.engine.(*vct.ECC); ok {
 			vctEngine = e
+		} else if beaconEngine, ok := s.engine.(*beacon.Beacon); ok {
+			if e, ok := beaconEngine.InnerEngine().(*vct.ECC); ok {
+				vctEngine = e
+			}
 		}
 		if vctEngine != nil {
 			if ksBackends := s.accountManager.Backends(keystore.KeyStoreType); len(ksBackends) > 0 {

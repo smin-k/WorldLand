@@ -38,6 +38,7 @@ var (
 	GwangjuGenesisHash = common.HexToHash("0x64130a2624d46bda6aacf0c1ec34ab3d926e31b8438141a10e7412070064f0bf")
 	MioGenesisHash     = common.HexToHash("")
 	BetaGenesisHash    = common.HexToHash("") // To be filled after genesis block creation
+	DaejeonGenesisHash = common.HexToHash("") // To be filled after first geth --daejeon init
 )
 
 // TrustedCheckpoints associates each known checkpoint with the genesis hash of
@@ -343,6 +344,29 @@ var (
 		Eccpow:              new(EccpowConfig),
 	}
 
+	// DaejeonChainConfig is the VCT testnet — WIP-6 active from block 0.
+	DaejeonChainConfig = &ChainConfig{
+		ChainID:             big.NewInt(10399),
+		HomesteadBlock:      big.NewInt(0),
+		DAOForkBlock:        nil,
+		DAOForkSupport:      true,
+		EIP150Block:         big.NewInt(0),
+		EIP155Block:         big.NewInt(0),
+		EIP158Block:         big.NewInt(0),
+		ByzantiumBlock:      big.NewInt(0),
+		ConstantinopleBlock: big.NewInt(0),
+		PetersburgBlock:     big.NewInt(0),
+		IstanbulBlock:       big.NewInt(0),
+		BerlinBlock:         big.NewInt(0),
+		LondonBlock:         big.NewInt(0),
+		WorldlandBlock:      big.NewInt(0),
+		SeoulBlock:          big.NewInt(0),
+		AnnapurnaBlock:      big.NewInt(0),
+		VCTBlock:            big.NewInt(0),
+		HalvingEndTime:      big.NewInt(25228800),
+		Eccpow:              new(EccpowConfig),
+	}
+
 	MioChainConfig = &ChainConfig{
 		ChainID:             big.NewInt(10396),
 		HomesteadBlock:      big.NewInt(0),
@@ -481,7 +505,8 @@ var NetworkNames = map[string]string{
 	GoerliChainConfig.ChainID.String():  "goerli",
 	SepoliaChainConfig.ChainID.String(): "sepolia",
 	SeoulChainConfig.ChainID.String():   "seoul",
-	GwangjuChainConfig.ChainID.String(): "gwangju",
+	GwangjuChainConfig.ChainID.String():  "gwangju",
+	DaejeonChainConfig.ChainID.String(): "daejeon",
 	MioChainConfig.ChainID.String():     "mio",
 	BetaChainConfig.ChainID.String():    "beta",
 }

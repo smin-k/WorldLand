@@ -296,6 +296,9 @@ func prepare(ctx *cli.Context) {
 	case ctx.IsSet(utils.GwangjuFlag.Name):
 		log.Info("Starting Worldland on Gwangju testnet ...")
 
+	case ctx.IsSet(utils.DaejeonFlag.Name):
+		log.Info("Starting Worldland on Daejeon VCT testnet ...")
+
 	case ctx.IsSet(utils.MioFlag.Name):
 		log.Info("Starting Worldland on Mio testnet ...")
 

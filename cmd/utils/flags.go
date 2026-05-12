@@ -161,6 +161,10 @@ var (
 		Name:  "gwangju",
 		Usage: "Gwangju network: Error-Correction Codes Proof-of-Work Test Network",
 	}
+	DaejeonFlag = &cli.BoolFlag{
+		Name:  "daejeon",
+		Usage: "Daejeon network: VCT (WIP-6) testnet active from block 0",
+	}
 
 	MioFlag = &cli.BoolFlag{
 		Name:  "mio",
@@ -1005,6 +1009,7 @@ var (
 		SepoliaFlag,
 		KilnFlag,*/
 		GwangjuFlag,
+		DaejeonFlag,
 		MioFlag,
 		BetaFlag,
 	}
@@ -1049,6 +1054,9 @@ func MakeDataDir(ctx *cli.Context) string {
 		}
 		if ctx.Bool(GwangjuFlag.Name) {
 			return filepath.Join(path, "gwangju")
+		}
+		if ctx.Bool(DaejeonFlag.Name) {
+			return filepath.Join(path, "daejeon")
 		}
 		if ctx.Bool(MioFlag.Name) {
 			return filepath.Join(path, "mio")
@@ -1116,6 +1124,8 @@ func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
 		urls = params.SeoulBootnodes
 	case ctx.Bool(GwangjuFlag.Name):
 		urls = params.GwangjuBootnodes
+	case ctx.Bool(DaejeonFlag.Name):
+		urls = params.DaejeonBootnodes
 	case ctx.Bool(MioFlag.Name):
 		urls = params.MioBootnodes
 	case ctx.Bool(BetaFlag.Name):
@@ -1582,6 +1592,8 @@ func SetDataDir(ctx *cli.Context, cfg *node.Config) {
 		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "seoul")
 	case ctx.Bool(GwangjuFlag.Name) && cfg.DataDir == node.DefaultDataDir():
 		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "gwangju")
+	case ctx.Bool(DaejeonFlag.Name) && cfg.DataDir == node.DefaultDataDir():
+		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "daejeon")
 	case ctx.Bool(MioFlag.Name) && cfg.DataDir == node.DefaultDataDir():
 		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "mio")
 	case ctx.Bool(BetaFlag.Name) && cfg.DataDir == node.DefaultDataDir():
@@ -1778,7 +1790,7 @@ func CheckExclusive(ctx *cli.Context, args ...interface{}) {
 func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	// Avoid conflicting network flags
 	//CheckExclusive(ctx, MainnetFlag, DeveloperFlag, RopstenFlag, RinkebyFlag, GoerliFlag, SepoliaFlag, KilnFlag, SeoulFlag, GwangjuFlag)
-	CheckExclusive(ctx, DeveloperFlag, SeoulFlag, GwangjuFlag, MioFlag)
+	CheckExclusive(ctx, DeveloperFlag, SeoulFlag, GwangjuFlag, DaejeonFlag, MioFlag)
 	CheckExclusive(ctx, LightServeFlag, SyncModeFlag, "light")
 	CheckExclusive(ctx, DeveloperFlag, ExternalSignerFlag) // Can't use both ephemeral unlocked and external signer
 	if ctx.String(GCModeFlag.Name) == "archive" && ctx.Uint64(TxLookupLimitFlag.Name) != 0 {
@@ -1971,6 +1983,13 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		}
 		cfg.Genesis = core.DefaultGwangjuGenesisBlock()
 		SetDNSDiscoveryDefaults(cfg, params.GwangjuGenesisHash)
+
+	case ctx.Bool(DaejeonFlag.Name):
+		if !ctx.IsSet(NetworkIdFlag.Name) {
+			cfg.NetworkId = 10399
+		}
+		cfg.Genesis = core.DefaultDaejeonGenesisBlock()
+		SetDNSDiscoveryDefaults(cfg, params.DaejeonGenesisHash)
 
 	case ctx.Bool(MioFlag.Name):
 		if !ctx.IsSet(NetworkIdFlag.Name) {
@@ -2241,6 +2260,8 @@ func MakeGenesis(ctx *cli.Context) *core.Genesis {
 		genesis = core.DefaultSeoulGenesisBlock()
 	case ctx.Bool(GwangjuFlag.Name):
 		genesis = core.DefaultGwangjuGenesisBlock()
+	case ctx.Bool(DaejeonFlag.Name):
+		genesis = core.DefaultDaejeonGenesisBlock()
 	case ctx.Bool(MioFlag.Name):
 		genesis = core.DefaultMioGenesisBlock()
 	case ctx.Bool(BetaFlag.Name):

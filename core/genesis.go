@@ -164,6 +164,8 @@ func CommitGenesisState(db ethdb.Database, hash common.Hash) error {
 			genesis = DefaultSeoulGenesisBlock()
 		case params.GwangjuGenesisHash:
 			genesis = DefaultGwangjuGenesisBlock()
+		case params.DaejeonGenesisHash:
+			genesis = DefaultDaejeonGenesisBlock()
 		}
 		if genesis != nil {
 			alloc = genesis.Alloc
@@ -502,6 +504,8 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 		return params.SeoulChainConfig
 	case ghash == params.GwangjuGenesisHash:
 		return params.GwangjuChainConfig
+	case ghash == params.DaejeonGenesisHash:
+		return params.DaejeonChainConfig
 	case ghash == params.MioGenesisHash:
 		return params.MioChainConfig
 	case ghash == params.BetaGenesisHash:
@@ -690,6 +694,22 @@ func DefaultGwangjuGenesisBlock() *Genesis {
 		Difficulty: big.NewInt(1023),
 		Alloc:      map[common.Address]GenesisAccount{
 			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): { Balance: balance },
+		},
+	}
+}
+
+func DefaultDaejeonGenesisBlock() *Genesis {
+	balanceStr := "40996800000000000000000000"
+	balance, _ := new(big.Int).SetString(balanceStr, 10)
+	return &Genesis{
+		Config:     params.DaejeonChainConfig,
+		Nonce:      10399,
+		Timestamp:  1747054800,
+		ExtraData:  []byte("Worldland Daejeon VCT"),
+		GasLimit:   30000000,
+		Difficulty: big.NewInt(1023),
+		Alloc: map[common.Address]GenesisAccount{
+			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): {Balance: balance},
 		},
 	}
 }

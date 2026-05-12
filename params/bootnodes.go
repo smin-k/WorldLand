@@ -97,6 +97,9 @@ var GwangjuBootnodes = []string{
 	"enode://911771c7894782bced03377a13f1d8a4e8450d05e03eabab1d6daae70e1b91b6074c346d42ac4fae53d98d273efedd6cdd37d2f6715302de9736b29cc4aa7da2@13.250.246.202:30303",
 }
 
+// Daejeon Bootnodes — VCT testnet, no public bootnodes (local/private use).
+var DaejeonBootnodes = []string{}
+
 // Mio Bootnodes are the enode URLs of the P2P bootstrap nodes running on the
 // Mio network.
 var MioBootnodes = []string{
@@ -162,6 +165,8 @@ func KnownDNSNetwork(genesis common.Hash, protocol string) string {
 	switch genesis {
 	case GwangjuGenesisHash:
 		net = "gwangju"
+	case DaejeonGenesisHash:
+		net = "daejeon"
 	case MioGenesisHash:
 		net = "mio"
 	case SeoulGenesisHash:

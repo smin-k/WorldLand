@@ -258,6 +258,19 @@ func (ks *KeyStore) Delete(a accounts.Account, passphrase string) error {
 	return err
 }
 
+// GetUnlockedKey returns the private key for an unlocked account.
+// Returns ErrLocked if the account has not been unlocked.
+// Callers must not retain the returned pointer beyond the account's unlock period.
+func (ks *KeyStore) GetUnlockedKey(a accounts.Account) (*ecdsa.PrivateKey, error) {
+	ks.mu.RLock()
+	defer ks.mu.RUnlock()
+	unlockedKey, found := ks.unlocked[a.Address]
+	if !found {
+		return nil, ErrLocked
+	}
+	return unlockedKey.PrivateKey, nil
+}
+
 // SignHash calculates a ECDSA signature for the given hash. The produced
 // signature is in the [R || S || V] format where V is 0 or 1.
 func (ks *KeyStore) SignHash(a accounts.Account, hash []byte) ([]byte, error) {

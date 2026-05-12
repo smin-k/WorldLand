@@ -376,17 +376,25 @@ func (ecc *ECC) EnsureVRFKeys(coinbase common.Address) error {
 }
 
 // SetVRFKey sets an explicit secp256k1 private key (32 bytes) as the VRF key.
-// The public key is derived automatically. Useful when the miner controls their own key.
+// The public key and vrfCoinbase are derived automatically, so EnsureVRFKeys
+// will not overwrite this key when the miner's coinbase matches.
 func (ecc *ECC) SetVRFKey(seckey []byte) error {
 	pubkey, err := secp256k1.VRFPubkeyFromSeckey(seckey)
 	if err != nil {
 		return fmt.Errorf("VCT: invalid VRF private key: %w", err)
 	}
+	prv, err := crypto.ToECDSA(seckey)
+	if err != nil {
+		return fmt.Errorf("VCT: cannot parse private key: %w", err)
+	}
+	addr := crypto.PubkeyToAddress(prv.PublicKey)
+
 	ecc.lock.Lock()
 	defer ecc.lock.Unlock()
 	ecc.vrfSecKey = make([]byte, 32)
 	copy(ecc.vrfSecKey, seckey)
 	ecc.vrfPubKey = pubkey
+	ecc.vrfCoinbase = addr
 	return nil
 }
 

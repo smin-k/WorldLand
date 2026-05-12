@@ -28,10 +28,12 @@ import (
 	"github.com/cryptoecc/WorldLand/accounts"
 	"github.com/cryptoecc/WorldLand/common"
 	"github.com/cryptoecc/WorldLand/common/hexutil"
+	"github.com/cryptoecc/WorldLand/accounts/keystore"
 	"github.com/cryptoecc/WorldLand/consensus"
 	"github.com/cryptoecc/WorldLand/consensus/beacon"
 	"github.com/cryptoecc/WorldLand/consensus/clique"
 	"github.com/cryptoecc/WorldLand/consensus/kaiju"
+	"github.com/cryptoecc/WorldLand/consensus/vct"
 	"github.com/cryptoecc/WorldLand/core"
 	"github.com/cryptoecc/WorldLand/core/bloombits"
 	"github.com/cryptoecc/WorldLand/core/rawdb"
@@ -488,6 +490,28 @@ func (s *Ethereum) StartMining(threads int) error {
 			}
 		} else {
 			log.Info("Not using Kaiju consensus, skipping VRF setup", "engine", fmt.Sprintf("%T", s.engine))
+		}
+
+		// Setup VRF key for VCT engine (WIP-6): use the actual account private key
+		// so that Address(VRFPublicKey) == coinbase is satisfied in verifyVRFProof.
+		var vctEngine *vct.ECC
+		if e, ok := s.engine.(*vct.ECC); ok {
+			vctEngine = e
+		}
+		if vctEngine != nil {
+			if ksBackends := s.accountManager.Backends(keystore.KeyStoreType); len(ksBackends) > 0 {
+				ks := ksBackends[0].(*keystore.KeyStore)
+				privKey, err := ks.GetUnlockedKey(accounts.Account{Address: eb})
+				if err != nil {
+					log.Warn("VCT: coinbase not unlocked — unlock the account before mining", "coinbase", eb, "err", err)
+				} else {
+					if err := vctEngine.SetVRFKey(privKey.D.Bytes()); err != nil {
+						log.Warn("VCT: failed to set VRF key from account key", "err", err)
+					} else {
+						log.Info("VCT: account key registered as VRF key", "coinbase", eb)
+					}
+				}
+			}
 		}
 
 		var cli *clique.Clique

@@ -245,10 +245,10 @@ type ChainOverrides struct {
 // SetupGenesisBlock writes or updates the genesis block in db.
 // The block that will be used is:
 //
-//                          genesis == nil       genesis != nil
-//                       +------------------------------------------
-//     db has no genesis |  main-net default  |  genesis
-//     db has genesis    |  from DB           |  genesis (if compatible)
+//	                     genesis == nil       genesis != nil
+//	                  +------------------------------------------
+//	db has no genesis |  main-net default  |  genesis
+//	db has genesis    |  from DB           |  genesis (if compatible)
 //
 // The stored chain configuration will be updated if it is compatible (i.e. does not
 // specify a fork block below the local head block). In case of a conflict, the
@@ -697,7 +697,7 @@ func DefaultSeoulGenesisBlock() *Genesis {
 		GasLimit:   30000000,
 		Difficulty: big.NewInt(1023),
 		Alloc: map[common.Address]GenesisAccount{
-			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): { Balance: balance },
+			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): {Balance: balance},
 		},
 	}
 }
@@ -712,8 +712,8 @@ func DefaultGwangjuGenesisBlock() *Genesis {
 		ExtraData:  []byte("Worldland Gwnagju"),
 		GasLimit:   30000000,
 		Difficulty: big.NewInt(1023),
-		Alloc:      map[common.Address]GenesisAccount{
-			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): { Balance: balance },
+		Alloc: map[common.Address]GenesisAccount{
+			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): {Balance: balance},
 		},
 	}
 }
@@ -721,6 +721,8 @@ func DefaultGwangjuGenesisBlock() *Genesis {
 func DefaultDaejeonGenesisBlock() *Genesis {
 	balanceStr := "40996800000000000000000000"
 	balance, _ := new(big.Int).SetString(balanceStr, 10)
+	// Daejeon funds local test miners at genesis so WIP-6 S0 is enforced from block 0.
+	testMinerBalance := new(big.Int).Mul(big.NewInt(1000), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
 	return &Genesis{
 		Config:     params.DaejeonChainConfig,
 		Nonce:      10399,
@@ -730,6 +732,8 @@ func DefaultDaejeonGenesisBlock() *Genesis {
 		Difficulty: big.NewInt(1023),
 		Alloc: map[common.Address]GenesisAccount{
 			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): {Balance: balance},
+			common.HexToAddress("0x30593e1F41ec08D982DD1d0077bb522b61a55081"): {Balance: testMinerBalance},
+			common.HexToAddress("0x67c10d6c2073F06f37664992f2D1E5B0543d15b3"): {Balance: testMinerBalance},
 		},
 	}
 }
@@ -744,8 +748,8 @@ func DefaultMioGenesisBlock() *Genesis {
 		ExtraData:  []byte("Worldland Mio"),
 		GasLimit:   30000000,
 		Difficulty: big.NewInt(1023),
-		Alloc:      map[common.Address]GenesisAccount{
-			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): { Balance: balance },
+		Alloc: map[common.Address]GenesisAccount{
+			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): {Balance: balance},
 		},
 	}
 }

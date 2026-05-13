@@ -38,7 +38,7 @@ var (
 	GwangjuGenesisHash = common.HexToHash("0x64130a2624d46bda6aacf0c1ec34ab3d926e31b8438141a10e7412070064f0bf")
 	MioGenesisHash     = common.HexToHash("")
 	BetaGenesisHash    = common.HexToHash("") // To be filled after genesis block creation
-	DaejeonGenesisHash = common.HexToHash("0x1b6069b67f54ea9031807160799b980c5accb8dbd2d938318aa033dbea9949bf")
+	DaejeonGenesisHash = common.HexToHash("0xa37bd66c7afce1a5604c402d7690724343d442368822373cec849d5ada5f32ef")
 )
 
 // TrustedCheckpoints associates each known checkpoint with the genesis hash of
@@ -364,7 +364,12 @@ var (
 		AnnapurnaBlock:      big.NewInt(0),
 		VCTBlock:            big.NewInt(0),
 		HalvingEndTime:      big.NewInt(25228800),
-		Vct:                 new(VctConfig),
+		Vct: &VctConfig{
+			// S₀ = 10 WL for blocks 0-9; drops to 0 at block 10 (S₀ fork test).
+			MinEligibleBalance: new(big.Int).Mul(big.NewInt(10), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)),
+			S0ForkBlock:        big.NewInt(10),
+			S0ForkBalance:      new(big.Int),
+		},
 	}
 
 	MioChainConfig = &ChainConfig{
@@ -505,7 +510,7 @@ var NetworkNames = map[string]string{
 	GoerliChainConfig.ChainID.String():  "goerli",
 	SepoliaChainConfig.ChainID.String(): "sepolia",
 	SeoulChainConfig.ChainID.String():   "seoul",
-	GwangjuChainConfig.ChainID.String():  "gwangju",
+	GwangjuChainConfig.ChainID.String(): "gwangju",
 	DaejeonChainConfig.ChainID.String(): "daejeon",
 	MioChainConfig.ChainID.String():     "mio",
 	BetaChainConfig.ChainID.String():    "beta",
@@ -631,8 +636,26 @@ type KaijuConfig struct{}
 type EccbetaConfig struct{}
 
 // VctConfig is the consensus engine config for the VCT (WIP-6) network.
-type VctConfig struct{}
+type VctConfig struct {
+	// MinEligibleBalance is S₀ (in wei): minimum parent-state balance required for a proposer.
+	// nil or zero means no restriction.
+	MinEligibleBalance *big.Int `json:"minEligibleBalance,omitempty"`
+	// S0ForkBlock is the block number where MinEligibleBalance changes to S0ForkBalance.
+	S0ForkBlock *big.Int `json:"s0ForkBlock,omitempty"`
+	// S0ForkBalance is the new S₀ value applied at and after S0ForkBlock.
+	S0ForkBalance *big.Int `json:"s0ForkBalance,omitempty"`
+}
 
+// MinEligibleBalanceAt returns the S₀ value applicable at the given block number.
+func (c *VctConfig) MinEligibleBalanceAt(blockNum *big.Int) *big.Int {
+	if c == nil || c.MinEligibleBalance == nil {
+		return new(big.Int)
+	}
+	if c.S0ForkBlock != nil && c.S0ForkBalance != nil && blockNum.Cmp(c.S0ForkBlock) >= 0 {
+		return c.S0ForkBalance
+	}
+	return c.MinEligibleBalance
+}
 
 // String implements the stringer interface, returning the consensus engine details.
 func (c *EthashConfig) String() string {

@@ -113,8 +113,8 @@ type headerMarshaling struct {
 	Time       hexutil.Uint64
 	Extra      hexutil.Bytes
 	BaseFee    *hexutil.Big
-	//Codeword   hexutil.Bytes
-	//CodeLength hexutil.Uint64
+	Codeword   hexutil.Bytes
+	CodeLength hexutil.Uint64
 	Hash       common.Hash `json:"hash"` // adds call to Hash() in MarshalJSON
 }
 
@@ -272,13 +272,14 @@ func CopyHeader(h *Header) *Header {
 		cpy.VRFPublicKey = make([]byte, len(h.VRFPublicKey))
 		copy(cpy.VRFPublicKey, h.VRFPublicKey)
 	}
-	/*if len(h.Codeword) > 0 {
+	if len(h.VRFSignature) > 0 {
+		cpy.VRFSignature = make([]byte, len(h.VRFSignature))
+		copy(cpy.VRFSignature, h.VRFSignature)
+	}
+	if len(h.Codeword) > 0 {
 		cpy.Codeword = make([]byte, len(h.Codeword))
 		copy(cpy.Codeword, h.Codeword)
 	}
-	if h.CodeLength != nil {
-		cpy.BaseFee = new(big.Int).Set(h.CodeLength)
-	}*/
 	return &cpy
 }
 

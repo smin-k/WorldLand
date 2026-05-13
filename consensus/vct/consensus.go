@@ -236,7 +236,7 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 		if err := ecc.verifySeal(chain, header); err != nil {
 			return err
 		}
-		if err := ecc.verifyVRFProof(chain, header); err != nil {
+		if err := ecc.verifyVRFProof(chain, header, parent); err != nil {
 			return err
 		}
 		if err := ecc.verifyMiningSig(header, ecc.SealHash(header).Bytes(), isVCT); err != nil {
@@ -253,7 +253,8 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 }
 
 // verifyVRFProof checks the secp256k1 VRF proof stored in the block header.
-func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header *types.Header) error {
+// parent must be non-nil; it is used to compute Δt for progressive timeout verification.
+func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent *types.Header) error {
 	if len(header.VRFProof) == 0 {
 		return errors.New("VCT: VRF proof missing")
 	}
@@ -264,6 +265,7 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header *types.
 	blockNumber := header.Number.Uint64()
 
 	var msg []byte
+	var deltaT uint64 // elapsed seconds since parent; used for progressive timeout (WIP-6 only)
 	if chain.Config().IsVCT(header.Number) {
 		// WIP-6: verify Address(VRFPublicKey) == Coinbase
 		pub, err := crypto.DecompressPubkey(header.VRFPublicKey)
@@ -277,6 +279,12 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header *types.
 		// WIP-6: VRF message = VCT_VRF || chainId || phash_{h-1} || h
 		chainIDBytes := ecc.chainIDBytes()
 		msg = computeVRFMsg(chainIDBytes, header.ParentHash.Bytes(), blockNumber)
+
+		// Compute Δt from block timestamps for progressive timeout sortition check.
+		// parent is always non-nil here (guaranteed by verifyHeader).
+		if header.Time > parent.Time {
+			deltaT = header.Time - parent.Time
+		}
 	} else {
 		seedHash := ecc.GetSortitionSeedHash(chain, blockNumber)
 		if seedHash == (common.Hash{}) {
@@ -289,11 +297,20 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header *types.
 	if _, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg); err != nil {
 		return fmt.Errorf("VCT: VRF proof invalid: %w", err)
 	}
-	if !CheckSortition(header.VRFProof) {
-		return errors.New("VCT: VRF proof does not pass sortition threshold")
+
+	// WIP-6: time-dependent threshold (progressive timeout liveness guarantee).
+	// Pre-VCT: fixed threshold.
+	if chain.Config().IsVCT(header.Number) {
+		if !CheckSortitionWithTime(header.VRFProof, deltaT) {
+			return fmt.Errorf("VCT: VRF proof does not pass sortition threshold (Δt=%d s)", deltaT)
+		}
+	} else {
+		if !CheckSortition(header.VRFProof) {
+			return errors.New("VCT: VRF proof does not pass sortition threshold")
+		}
 	}
 
-	log.Debug("VCT: VRF proof verified", "block", blockNumber, "epoch", SortitionEpoch(blockNumber))
+	log.Debug("VCT: VRF proof verified", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "deltaT", deltaT)
 	return nil
 }
 

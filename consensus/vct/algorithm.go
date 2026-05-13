@@ -15,6 +15,7 @@ import (
 
 	"github.com/cryptoecc/WorldLand/common"
 	"github.com/cryptoecc/WorldLand/consensus"
+	"github.com/cryptoecc/WorldLand/core/state"
 	"github.com/cryptoecc/WorldLand/core/types"
 	"github.com/cryptoecc/WorldLand/crypto"
 	secp256k1 "github.com/cryptoecc/WorldLand/crypto/secp256k1"
@@ -131,7 +132,7 @@ const (
 	SortitionEpochLength  = 100 // blocks per sortition epoch
 	SortitionSeedLookback = 10  // blocks before epoch boundary for seed (fork resistance)
 
-	ModeNormal  Mode = iota
+	ModeNormal Mode = iota
 	ModeShared
 	ModeTest
 	ModeFake
@@ -353,6 +354,29 @@ func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumbe
 	eligible := CheckSortition(proof)
 	log.Info("VCT sortition", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "eligible", eligible)
 	return eligible, proof, nil
+}
+
+// VerifyProposerEligibility implements consensus.ProposerVerifier.
+// It enforces WIP-6 S0 after VCTBlock: the proposer's balance at parent state
+// must meet the configured minimum.
+func (ecc *ECC) VerifyProposerEligibility(chain consensus.ChainHeaderReader, header, parent *types.Header, parentState *state.StateDB) error {
+	if !chain.Config().IsVCT(header.Number) {
+		return nil
+	}
+	vctCfg := chain.Config().Vct
+	if vctCfg == nil || parentState == nil {
+		return nil
+	}
+	s0 := vctCfg.MinEligibleBalanceAt(header.Number)
+	if s0.Sign() == 0 {
+		return nil
+	}
+	balance := parentState.GetBalance(header.Coinbase)
+	if balance.Cmp(s0) < 0 {
+		return fmt.Errorf("VCT: proposer %s balance %s wei < S0 %s wei at block %d",
+			header.Coinbase.Hex(), balance.String(), s0.String(), header.Number.Uint64())
+	}
+	return nil
 }
 
 // EnsureVRFKeys checks whether VRF keys match coinbase and re-derives if not.

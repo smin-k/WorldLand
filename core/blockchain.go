@@ -1666,6 +1666,13 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals, setHead bool)
 		if err != nil {
 			return it.index, err
 		}
+		// WIP-6: Optional balance-gated proposer eligibility check (S₀).
+		if pv, ok := bc.engine.(consensus.ProposerVerifier); ok {
+			if err := pv.VerifyProposerEligibility(bc, block.Header(), parent, statedb); err != nil {
+				bc.reportBlock(block, nil, err)
+				return it.index, err
+			}
+		}
 
 		// Enable prefetching to pull in trie node paths while processing transactions
 		statedb.StartPrefetcher("chain")

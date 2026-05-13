@@ -37,6 +37,7 @@ func (h Header) MarshalJSON() ([]byte, error) {
 		CodeLength   hexutil.Uint64 `json:"codelength"       rlp:"optional"`
 		VRFProof     hexutil.Bytes  `json:"vrfProof"         rlp:"optional"`
 		VRFPublicKey hexutil.Bytes  `json:"vrfPublicKey"     rlp:"optional"`
+		VRFSignature hexutil.Bytes  `json:"vrfSignature"     rlp:"optional"`
 	}
 	var enc Header
 	enc.ParentHash = h.ParentHash
@@ -60,6 +61,7 @@ func (h Header) MarshalJSON() ([]byte, error) {
 	enc.CodeLength = hexutil.Uint64(h.CodeLength)
 	enc.VRFProof = h.VRFProof
 	enc.VRFPublicKey = h.VRFPublicKey
+	enc.VRFSignature = h.VRFSignature
 	return json.Marshal(&enc)
 }
 
@@ -86,6 +88,7 @@ func (h *Header) UnmarshalJSON(input []byte) error {
 		CodeLength   *hexutil.Uint64 `json:"codelength"       rlp:"optional"`
 		VRFProof     *hexutil.Bytes  `json:"vrfProof"         rlp:"optional"`
 		VRFPublicKey *hexutil.Bytes  `json:"vrfPublicKey"     rlp:"optional"`
+		VRFSignature *hexutil.Bytes  `json:"vrfSignature"     rlp:"optional"`
 	}
 	var dec Header
 	if err := json.Unmarshal(input, &dec); err != nil {
@@ -162,6 +165,9 @@ func (h *Header) UnmarshalJSON(input []byte) error {
 	}
 	if dec.VRFPublicKey != nil {
 		h.VRFPublicKey = *dec.VRFPublicKey
+	}
+	if dec.VRFSignature != nil {
+		h.VRFSignature = *dec.VRFSignature
 	}
 
 	return nil

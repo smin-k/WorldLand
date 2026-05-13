@@ -128,3 +128,10 @@ type PoW interface {
 	// Hashrate returns the current mining hashrate of a PoW consensus engine.
 	Hashrate() float64
 }
+
+// ProposerVerifier is an optional consensus extension for balance-gated block proposer eligibility (WIP-6 S₀).
+// Engines that implement this interface will have VerifyProposerEligibility called during block insertion,
+// after the parent state is loaded but before block processing. Return a non-nil error to reject the block.
+type ProposerVerifier interface {
+	VerifyProposerEligibility(chain ChainHeaderReader, header, parent *types.Header, parentState *state.StateDB) error
+}

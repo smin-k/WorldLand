@@ -60,15 +60,66 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 	if err != nil {
 		return fmt.Errorf("VCT: sortition check failed: %w", err)
 	}
+
+	// Copy header early; we may need to update Time and Difficulty for the timeout case.
+	header := block.Header()
+
 	if !eligible {
-		log.Info("VCT: not eligible for this epoch", "block", blockNumber, "epoch", SortitionEpoch(blockNumber))
-		return errors.New("VCT: not eligible for sortition epoch")
+		if !chain.Config().IsVCT(header.Number) {
+			// Pre-VCT: reject immediately (legacy behaviour).
+			log.Info("VCT: not eligible for this epoch", "block", blockNumber, "epoch", SortitionEpoch(blockNumber))
+			return errors.New("VCT: not eligible for sortition epoch")
+		}
+
+		// WIP-6 progressive timeout: wait until this miner's VRF output falls
+		// below the time-expanded threshold, then mine with the updated timestamp.
+		output, oerr := VRFOutputFromProof(proof)
+		if oerr != nil {
+			return fmt.Errorf("VCT: cannot extract VRF output: %w", oerr)
+		}
+		delay := SortitionSubmitDelay(output[0])
+
+		parentHeader := chain.GetHeaderByHash(header.ParentHash)
+		var parentTime uint64
+		if parentHeader != nil {
+			parentTime = parentHeader.Time
+		}
+		submitAt := parentTime + delay
+		log.Info("VCT: not immediately eligible — waiting for progressive timeout",
+			"block", blockNumber, "delay_s", delay, "submitAt", submitAt)
+
+		deadline := time.Unix(int64(submitAt), 0)
+		if waitDur := time.Until(deadline); waitDur > 0 {
+			timer := time.NewTimer(waitDur)
+			select {
+			case <-timer.C:
+			case <-stop:
+				timer.Stop()
+				log.Info("VCT: mining aborted during timeout wait", "block", blockNumber)
+				return nil
+			}
+			timer.Stop()
+		}
+
+		// Set block timestamp to max(submitAt, now()) so the verifier sees
+		// Δt ≥ delay and accepts the block.
+		nowSec := uint64(time.Now().Unix())
+		if nowSec > submitAt {
+			header.Time = nowSec
+		} else {
+			header.Time = submitAt
+		}
+		// Recalculate difficulty for the updated timestamp (sealHash commits to Difficulty).
+		if parentHeader != nil {
+			header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parentHeader)
+		}
+		log.Info("VCT: progressive timeout elapsed, proceeding with mining",
+			"block", blockNumber, "timestamp", header.Time, "difficulty", header.Difficulty)
+	} else {
+		log.Info("VCT: eligible to mine", "block", blockNumber, "epoch", SortitionEpoch(blockNumber))
 	}
 
-	log.Info("VCT: eligible to mine", "block", blockNumber, "epoch", SortitionEpoch(blockNumber))
-
-	// Embed VRF proof + public key in the header
-	header := block.Header()
+	// Embed VRF proof + public key in the header (which may have updated Time/Difficulty).
 	header.VRFProof = proof
 	ecc.lock.Lock()
 	header.VRFPublicKey = make([]byte, len(ecc.vrfPubKey))

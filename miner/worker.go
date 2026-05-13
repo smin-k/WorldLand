@@ -699,6 +699,17 @@ func (w *worker) resultLoop() {
 			)
 			w.pendingMu.RLock()
 			task, exist := w.pendingTasks[sealhash]
+			if !exist {
+				// VCT progressive timeout: Seal() may update header.Time/Difficulty,
+				// shifting the sealhash. Fall back to block-number lookup.
+				for _, t := range w.pendingTasks {
+					if t.block.NumberU64() == block.NumberU64() {
+						task = t
+						exist = true
+						break
+					}
+				}
+			}
 			w.pendingMu.RUnlock()
 			if !exist {
 				log.Error("Block found but no relative pending task", "number", block.Number(), "sealhash", sealhash, "hash", hash)

@@ -48,3 +48,10 @@ profile.cov
 
 **/yarn-error.log
 beta-data/
+
+# Local WIP-6 / testnet experiment artifacts
+/compat-test/
+/node*.log
+/daejeon-node*.log
+/worldland*.exe*
+/daejeon-password*.txt

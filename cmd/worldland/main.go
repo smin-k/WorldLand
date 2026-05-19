@@ -299,12 +299,6 @@ func prepare(ctx *cli.Context) {
 	case ctx.IsSet(utils.DaejeonFlag.Name):
 		log.Info("Starting Worldland on Daejeon VCT testnet ...")
 
-	case ctx.IsSet(utils.MioFlag.Name):
-		log.Info("Starting Worldland on Mio testnet ...")
-
-	case ctx.IsSet(utils.BetaFlag.Name):
-		log.Info("Starting Worldland on Beta network ...")
-
 	case ctx.IsSet(utils.DeveloperFlag.Name):
 		log.Info("Starting Worldland in ephemeral dev mode...")
 		log.Warn(`You are running Worldland in --dev mode. Please note the following:
@@ -337,7 +331,6 @@ func prepare(ctx *cli.Context) {
 			!ctx.IsSet(utils.KilnFlag.Name) &&
 			!ctx.IsSet(utils.SeoulFlag.Name) &&
 			!ctx.IsSet(utils.GwangjuFlag.Name) &&
-			!ctx.IsSet(utils.MioFlag.Name) &&
 			!ctx.IsSet(utils.DeveloperFlag.Name) {
 			// Nope, we're really on mainnet. Bump that cache up!
 			log.Info("Bumping default cache on mainnet", "provided", ctx.Int(utils.CacheFlag.Name), "updated", 4096)

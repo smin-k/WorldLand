@@ -141,7 +141,51 @@ VCT 노드가 블록 100 채굴 시도 (계정 잠금 해제 없음).
 
 ---
 
-## 3. 회귀 방지 테스트 목록
+## 3. Seoul 메인넷 동기화 회귀 테스트 (라이브)
+
+### 목적
+
+VCT 바이너리(eccbeta/kaiju 제거 후)가 Seoul 네트워크(chainID 103, ECCPoW)와의  
+기존 호환성을 유지하는지 검증. WIP-6 코드 변경이 Seoul 엔진 경로를 손상시키지 않았음을 확인.
+
+### 환경
+
+| 항목 | 값 |
+|------|-----|
+| 바이너리 | `worldland-vct.exe` (feature/wip-6-vct 브랜치) |
+| 플래그 | `--seoul --syncmode snap` |
+| 네트워크 | Seoul mainnet (chainID 103) |
+| 플랫폼 | Windows 11 |
+
+### 결과
+
+```
+INFO Starting Worldland on Seoul ...
+INFO Creating ECCPoW consensus engine
+INFO Block synchronisation started
+INFO Imported new block headers  count=192 number=192    ← 시작
+...
+INFO Imported new block headers  count=192 number=613,824  ← 60초 후
+```
+
+| 항목 | 결과 |
+|------|------|
+| 엔진 선택 | ECCPoW 정상 선택 (`Vct` 설정 없음 → eccpow.New()) |
+| 피어 연결 | SeoulBootnodes 경유 자동 연결 |
+| 헤더 동기화 | 60초 내 블록 0 → 613,824 — 오류 없음 |
+| 리시트 동기화 | 2048개 배치, 병렬 처리 정상 |
+| 에러 / 패닉 | 없음 |
+
+**VCT 바이너리로 Seoul ECCPoW 동기화 정상 동작. ✅**
+
+검증 포인트:
+- `consensus/eccbeta`, `consensus/kaiju` 제거 후에도 eccpow 경로 영향 없음
+- `CreateConsensusEngine`: `vctConfig == nil` → `eccpow.New()` 분기 정상 동작
+- Seoul 헤더 검증 로직 (`legacySealHash`, `verifySeal`) 변경 없음 확인
+
+---
+
+## 4. 회귀 방지 테스트 목록
 
 | 테스트 | 보호하는 불변성 |
 |--------|----------------|

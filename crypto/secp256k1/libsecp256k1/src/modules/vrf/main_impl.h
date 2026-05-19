@@ -222,14 +222,31 @@ static void secp256k1_vrf_ecsub(secp256k1_ge *result, secp256k1_ge *a, secp256k1
 
 static int point_to_string(unsigned char *output, const secp256k1_ge *P) {
     size_t len = 33;
+    secp256k1_ge P_copy;
     if (!output || !P) return 0;
     memset(output, 0, len);
-    return secp256k1_eckey_pubkey_serialize(P, output, &len, 1);
+    P_copy = *P;
+    return secp256k1_eckey_pubkey_serialize(&P_copy, output, &len, 1);
 }
 
 static int string_to_point(secp256k1_ge *P, const unsigned char input[33]) {
     if (!P || !input) return 0;
     return secp256k1_eckey_pubkey_parse(P, input, 33);
+}
+
+static int vrf_scalar32_valid_nonzero(const unsigned char scalar32[32]) {
+    secp256k1_scalar scalar;
+    int overflow = 0, ret = 0;
+    secp256k1_scalar_set_b32(&scalar, scalar32, &overflow);
+    ret = !overflow && !secp256k1_scalar_is_zero(&scalar);
+    secp256k1_scalar_clear(&scalar);
+    return ret;
+}
+
+static int vrf_scalar16_valid_nonzero(const unsigned char scalar16[16]) {
+    unsigned char scalar32[32] = {0};
+    memcpy(scalar32 + 16, scalar16, 16);
+    return vrf_scalar32_valid_nonzero(scalar32);
 }
 
 /*
@@ -257,7 +274,7 @@ static int vrf_hash_to_curve_tai(secp256k1_ge *point, const secp256k1_ge *Y_poin
     buffer_append(full_string, &offset, pk_string, pk_len);
     buffer_append(full_string, &offset, alpha_string, alpha_len);
 
-    for (;; ctr++) {
+    for (ctr = 0;; ctr++) {
         /* the first byte used by the inplace arbitrary_string_to_point() */
         unsigned char hash_string[33];
         /* update the ctr directly on the string */
@@ -271,7 +288,12 @@ static int vrf_hash_to_curve_tai(secp256k1_ge *point, const secp256k1_ge *Y_poin
           free(full_string);
           return 1;
         }
+        if (ctr == 0xFF) {
+          break;
+        }
     }
+    free(full_string);
+    return 0;
 }
 
 static void vrf_hash_points(
@@ -320,11 +342,14 @@ static int vrf_decode_proof(
     const unsigned char pi[81]
 ){
     /* gamma = decode_point(pi[0:32]) */
-    if (string_to_point(Gamma, pi) == 0) {
+    if (string_to_point(Gamma, pi) == 0 || secp256k1_ge_is_infinity(Gamma)) {
         return 0;
     }
     memcpy(c, pi+33, 16); /* c = pi[33:48] */
     memcpy(s, pi+49, 32); /* s = pi[49:80] */
+    if (!vrf_scalar16_valid_nonzero(c) || !vrf_scalar32_valid_nonzero(s)) {
+        return 0;
+    }
     return 1;
 }
 
@@ -387,7 +412,7 @@ static int vrf_prove(
     /* pi[33:48] = c (16 bytes) */
     memmove(pi+33, c_scalar+16, 16);
     /* pi[49:80] = s = c*x + k (mod q) */
-    secp256k1_scalar32_muladd(pi+49, c_scalar, x_scalar, k_scalar);
+    if (!secp256k1_scalar32_muladd(pi+49, c_scalar, x_scalar, k_scalar)) goto loc_cleanup;
 
     /* everything is OK */
     ret = 1;
@@ -457,13 +482,13 @@ static int vrf_verify(
     if (!vrf_hash_to_curve_tai(&H_point, Y_point, alpha, alphalen)) return 0;
 
     /* calculate U = s*B - c*Y */
-    secp256k1_vrf_ecmult_base(&sB_point, s_scalar);      /* compute s*B */
-    secp256k1_vrf_ecmult(&cY_point, c_scalar, Y_point);  /* compute c*Y */
+    if (!secp256k1_vrf_ecmult_base(&sB_point, s_scalar)) return 0;      /* compute s*B */
+    if (!secp256k1_vrf_ecmult(&cY_point, c_scalar, Y_point)) return 0;  /* compute c*Y */
     secp256k1_vrf_ecsub(&U_point, &sB_point, &cY_point); /* U = s*B - c*Y */
 
     /* calculate V = s*H -  c*Gamma */
-    secp256k1_vrf_ecmult(&sH_point, s_scalar, &H_point);         /* compute s*H */
-    secp256k1_vrf_ecmult(&cGamma_point, c_scalar, &Gamma_point); /* compute c*Gamma */
+    if (!secp256k1_vrf_ecmult(&sH_point, s_scalar, &H_point)) return 0;         /* compute s*H */
+    if (!secp256k1_vrf_ecmult(&cGamma_point, c_scalar, &Gamma_point)) return 0; /* compute c*Gamma */
     secp256k1_vrf_ecsub(&V_point, &sH_point, &cGamma_point);     /* V = s*H - c*Gamma */
 
     /* c = ECVRF_hash_points(h, gamma, U, V) */

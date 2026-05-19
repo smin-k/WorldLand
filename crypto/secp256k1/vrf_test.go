@@ -12,6 +12,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/hex"
 	"math/big"
 	"testing"
 )
@@ -130,6 +131,53 @@ func TestVRFProofToHash(t *testing.T) {
 	}
 }
 
+func TestWIP6VRFTestVector(t *testing.T) {
+	seckey, err := hex.DecodeString("0000000000000000000000000000000000000000000000000000000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubkey, err := VRFPubkeyFromSeckey(seckey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := hex.DecodeString("5643545f565246000000000000000000000000000000000000000000000000000000000000289f11111111111111111111111111111111111111111111111111111111111111110000000000000064")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPubkey, err := hex.DecodeString("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantProof, err := hex.DecodeString("02c7026636565add26a1cf2ec857f77c407609ba8893a0dfae5218f87cea06d20e9139789ff96b5ff2996092b188a4605cb9043c9c1266c8447a7503ee9a1b3fe38c284f3ffd5dc2556294f6db60b6281a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOutput, err := hex.DecodeString("3fbb5d74ce6104b219c7989ce71ce65957e573fa492e703e1dbedd1c00565164")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(pubkey, wantPubkey) {
+		t.Fatalf("pubkey mismatch: got %x want %x", pubkey, wantPubkey)
+	}
+	proof, output, err := VRFProve(seckey, pubkey, msg)
+	if err != nil {
+		t.Fatalf("VRFProve failed: %v", err)
+	}
+	if !bytes.Equal(proof[:], wantProof) {
+		t.Fatalf("proof mismatch: got %x want %x", proof, wantProof)
+	}
+	if !bytes.Equal(output[:], wantOutput) {
+		t.Fatalf("output mismatch: got %x want %x", output, wantOutput)
+	}
+	verified, err := VRFVerify(pubkey, proof, msg)
+	if err != nil {
+		t.Fatalf("VRFVerify failed: %v", err)
+	}
+	if !bytes.Equal(verified[:], wantOutput) {
+		t.Fatalf("verified output mismatch: got %x want %x", verified, wantOutput)
+	}
+}
+
 // TestVRFWrongMessageVerify checks that a proof produced for msg_A cannot be
 // verified against msg_B.  This guards against proof replay across different
 // VRF inputs (e.g. different block numbers or parent hashes in VCT).
@@ -179,4 +227,36 @@ func TestVRFTamperedProofRejected(t *testing.T) {
 		t.Logf("note: %d/81 byte positions were accepted after single-byte flip (expected 0)", 81-rejected)
 	}
 	t.Logf("tamper rejection: %d/81 byte positions correctly rejected", rejected)
+}
+
+func TestVRFRejectsMalformedScalars(t *testing.T) {
+	seckey, pubkey := makeVRFKeypair(t)
+	msg := []byte("VCT_VRF|malformed-scalar")
+
+	proof, _, err := VRFProve(seckey, pubkey, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	zeroChallenge := proof
+	for i := 33; i < 49; i++ {
+		zeroChallenge[i] = 0
+	}
+	if _, err := VRFVerify(pubkey, zeroChallenge, msg); err == nil {
+		t.Fatal("VRFVerify accepted proof with zero challenge scalar")
+	}
+	if _, err := VRFProofToHash(zeroChallenge); err == nil {
+		t.Fatal("VRFProofToHash accepted proof with zero challenge scalar")
+	}
+
+	zeroS := proof
+	for i := 49; i < 81; i++ {
+		zeroS[i] = 0
+	}
+	if _, err := VRFVerify(pubkey, zeroS, msg); err == nil {
+		t.Fatal("VRFVerify accepted proof with zero s scalar")
+	}
+	if _, err := VRFProofToHash(zeroS); err == nil {
+		t.Fatal("VRFProofToHash accepted proof with zero s scalar")
+	}
 }

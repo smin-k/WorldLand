@@ -287,10 +287,11 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 		chainIDBytes := ecc.chainIDBytes()
 		msg = computeVRFMsg(chainIDBytes, header.ParentHash.Bytes(), blockNumber)
 
-		// Compute Δt from block timestamps for progressive timeout sortition check.
-		// parent is always non-nil here (guaranteed by verifyHeader).
+		// Compute effective Δt for progressive timeout sortition.
+		// EffectiveDeltaT subtracts VCTFutureTolerance so that advancing the block
+		// timestamp by up to that amount yields no free timeout eligibility.
 		if header.Time > parent.Time {
-			deltaT = header.Time - parent.Time
+			deltaT = EffectiveDeltaT(header.Time - parent.Time)
 		}
 	} else {
 		seedHash := ecc.GetSortitionSeedHash(chain, blockNumber)

@@ -80,7 +80,9 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 			if parentHeader != nil {
 				parentTime = parentHeader.Time
 			}
-			submitAt := parentTime + delay
+			// delay is in effectiveDeltaT units; add VCTFutureTolerance to get
+			// the raw header.Time at which the verifier sees effectiveDeltaT == delay.
+			submitAt := parentTime + delay + VCTFutureTolerance
 			log.Info("VCT: not immediately eligible — waiting for progressive timeout",
 				"block", blockNumber, "delay_s", delay, "submitAt", submitAt)
 

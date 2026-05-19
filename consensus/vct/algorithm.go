@@ -373,8 +373,11 @@ func (ecc *ECC) VerifyProposerEligibility(chain consensus.ChainHeaderReader, hea
 		return nil
 	}
 	vctCfg := chain.Config().Vct
-	if vctCfg == nil || parentState == nil {
+	if vctCfg == nil {
 		return nil
+	}
+	if parentState == nil {
+		return errors.New("VCT: parent state required for S0 proposer eligibility")
 	}
 	s0 := vctCfg.MinEligibleBalanceAt(header.Number)
 	if s0.Sign() == 0 {

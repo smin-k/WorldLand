@@ -18,16 +18,35 @@ const (
 	// Gives p_h^0 = 160/256 ≈ 62.5%.
 	SortitionBase uint8 = 0xA0
 
-	// TimeoutStart is the Δt (seconds since parent block) after which the sortition
-	// threshold begins expanding beyond p_h^0.  Below this, p_h(Δt) = p_h^0.
+	// TimeoutStart is the effective Δt (seconds) after which the sortition threshold
+	// begins expanding beyond p_h^0.  Defined in terms of effectiveDeltaT.
 	TimeoutStart uint64 = 15
 
-	// TimeoutEnd is the Δt (seconds) at which p_h(Δt) = 1 (all miners eligible).
-	// A block with Δt ≥ TimeoutEnd is always accepted regardless of VRF output.
+	// TimeoutEnd is the effective Δt (seconds) at which p_h(Δt) = 1 (all eligible).
+	// Defined in terms of effectiveDeltaT; in raw header timestamps this corresponds
+	// to TimeoutEnd + VCTFutureTolerance seconds after the parent block.
 	TimeoutEnd uint64 = 60
+
+	// VCTFutureTolerance is the consensus-fixed future-timestamp allowance (seconds).
+	// It is subtracted from the raw Δt before computing the progressive timeout threshold
+	// so that advancing the block timestamp by up to VCTFutureTolerance seconds does not
+	// translate into free timeout eligibility.
+	// Must be kept in sync with allowedFutureBlockTimeSeconds in consensus.go.
+	VCTFutureTolerance uint64 = 15
 )
 
 var errInvalidVRFProofLen = errors.New("VRF proof must be 81 bytes")
+
+// EffectiveDeltaT converts a raw block-time delta (header.Time - parent.Time) to
+// the effective delta used for progressive timeout eligibility.  The future-timestamp
+// allowance (VCTFutureTolerance) is subtracted so that a miner advancing the block
+// timestamp by up to VCTFutureTolerance seconds gains no timeout credit.
+func EffectiveDeltaT(rawDeltaT uint64) uint64 {
+	if rawDeltaT > VCTFutureTolerance {
+		return rawDeltaT - VCTFutureTolerance
+	}
+	return 0
+}
 
 // VRFProve generates an 81-byte secp256k1 VRF proof and the corresponding 32-byte output.
 // seckey: 32-byte secp256k1 private key

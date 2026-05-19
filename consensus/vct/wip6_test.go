@@ -181,14 +181,15 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 	}
 
 	// 5. Build the block header with VRF fields.
-	//    deltaT = TimeoutEnd → SortitionEligible returns true for any output.
+	//    Raw deltaT = TimeoutEnd + VCTFutureTolerance → effectiveDeltaT = TimeoutEnd
+	//    → SortitionEligible returns true for any output.
 	header := &types.Header{
 		ParentHash: parentHash,
 		Coinbase:   coinbase,
 		Number:     big.NewInt(int64(blockNum)),
 		Difficulty: big.NewInt(0x3ff),
 		GasLimit:   30000000,
-		Time:       parent.Time + TimeoutEnd,
+		Time:       parent.Time + TimeoutEnd + VCTFutureTolerance,
 		VRFProof:   proof,
 	}
 	ecc.lock.Lock()

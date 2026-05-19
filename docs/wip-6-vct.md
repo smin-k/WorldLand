@@ -92,10 +92,29 @@ eccpow.SealHash()와 바이트 단위로 동일. `TestLegacySealHashMatchesECCPo
 | 상수 | 값 | 설명 |
 |------|-----|------|
 | `SortitionBase` | `0xA0` (160/256) | 즉시 통과 임계값 (≈62.5%) |
-| `TimeoutStart` | 15초 | 임계값 확장 시작 시점 |
-| `TimeoutEnd` | 60초 | 모든 채굴자 통과 (임계값=100%) |
+| `TimeoutStart` | 15초 | 임계값 확장 시작 시점 (`Δt_eff` 기준) |
+| `TimeoutEnd` | 60초 | 모든 채굴자 통과 (`Δt_eff` 기준) |
+| `VCTFutureTolerance` | 15초 | 미래 타임스탬프 허용 상수 `F` |
 
 `SortitionEligible(output, Δt)`: Δt ≥ TimeoutEnd이면 무조건 통과.
+
+### 타임스탬프 조작 완화 (`VCTFutureTolerance`)
+
+`TimeoutStart` / `TimeoutEnd`는 원시 `Δt = header.Time - parent.Time`이 아닌 **유효 경과 시간** `Δt_eff`를 기준으로 한다:
+
+```
+Δt_eff = max(0, Δt - F)    // F = VCTFutureTolerance = 15
+```
+
+검증 노드는 `verifyVRFProof`에서 `EffectiveDeltaT(rawDeltaT)`를 호출하여 `Δt_eff`로 정렬 통과 여부를 판정한다. 채굴자가 타임스탬프를 최대 `F`초 앞당겨도 `Δt_eff`는 변하지 않으므로, `F` 이하의 타임스탬프 조작은 타임아웃 자격 확대로 이어지지 않는다.
+
+채굴자가 `t_submit` 대기 후 블록을 제출할 때 사용하는 원시 타임스탬프 조건:
+
+```
+header.Time >= parent.Time + t_submit + F
+```
+
+`sealer.go`에서 `submitAt = parentTime + delay + VCTFutureTolerance`로 계산된다.
 
 ---
 
@@ -176,14 +195,18 @@ VCT 엔진이 이 인터페이스를 구현하며, 부모 상태 로드 직후 �
 
 `WriteBlockAndSetHead()` (채굴 경로):
 ```go
-if pv, ok := bc.engine.(consensus.ProposerVerifier); ok {
-    if err := pv.VerifyProposerEligibility(bc, block.Header(), parent, statedb); err != nil {
-        return 0, nil, false, err  // ErrProposerIneligible 반환
-    }
+parentState, err := bc.StateAt(parentHeader.Root)
+if err != nil {
+    // snap sync 등 부모 상태 없음 → S₀ 건너뜀. ECCPoW + VRF는 여전히 적용.
+    log.Debug("WIP-6 S₀ check skipped: parent state unavailable", ...)
+} else if err := pv.VerifyProposerEligibility(..., parentState); err != nil {
+    return NonStatTy, err
 }
 ```
 
-`insertChain()` (P2P 동기화 경로)에서도 동일한 패턴으로 호출.
+`insertChain()` (P2P 동기화 경로)에서도 동일한 패턴으로 호출. snap sync 구간에서 `state.New`가 실패하면 `VerifyProposerEligibility` 호출 자체가 발생하지 않는다 (state 에러가 먼저 반환됨).
+
+**snap sync와 S₀**: 부모 상태가 없는 경우 S₀ 검증을 건너뛴다. ECCPoW 유효성과 VRF 증명은 상태 독립적으로 항상 검증되므로, S₀ 게이트 우회만으로 공격자가 얻을 수 있는 이득은 없다.
 
 ### VCT 설정 로드 (`core/genesis.go`)
 

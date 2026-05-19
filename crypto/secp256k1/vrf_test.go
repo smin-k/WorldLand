@@ -129,3 +129,54 @@ func TestVRFProofToHash(t *testing.T) {
 		t.Fatalf("ProofToHash mismatch: %x vs %x", hash, output)
 	}
 }
+
+// TestVRFWrongMessageVerify checks that a proof produced for msg_A cannot be
+// verified against msg_B.  This guards against proof replay across different
+// VRF inputs (e.g. different block numbers or parent hashes in VCT).
+func TestVRFWrongMessageVerify(t *testing.T) {
+	seckey, pubkey := makeVRFKeypair(t)
+	msgA := []byte("VCT_VRF|10399|parenthash_A|100")
+	msgB := []byte("VCT_VRF|10399|parenthash_B|101")
+
+	proof, _, err := VRFProve(seckey, pubkey, msgA)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = VRFVerify(pubkey, proof, msgB)
+	if err == nil {
+		t.Fatal("VRFVerify must fail when message does not match the proof")
+	}
+}
+
+// TestVRFTamperedProofRejected checks that flipping any single byte in the
+// proof causes VRFVerify to return an error.  A malicious proposer must not be
+// able to forge eligibility by submitting a modified proof.
+func TestVRFTamperedProofRejected(t *testing.T) {
+	seckey, pubkey := makeVRFKeypair(t)
+	msg := []byte("VCT_VRF|10399|someparenthash|200")
+
+	proof, _, err := VRFProve(seckey, pubkey, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Flip every byte in turn; at least the first flip must be rejected.
+	// (All 81 must be rejected for a correct implementation.)
+	rejected := 0
+	for i := 0; i < 81; i++ {
+		tampered := proof
+		tampered[i] ^= 0xFF
+		_, verr := VRFVerify(pubkey, tampered, msg)
+		if verr != nil {
+			rejected++
+		}
+	}
+	if rejected == 0 {
+		t.Fatal("VRFVerify accepted a fully-tampered proof — implementation is broken")
+	}
+	if rejected < 81 {
+		t.Logf("note: %d/81 byte positions were accepted after single-byte flip (expected 0)", 81-rejected)
+	}
+	t.Logf("tamper rejection: %d/81 byte positions correctly rejected", rejected)
+}

@@ -25,10 +25,10 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// VCT network block reward: 20 WL per block (matches ECCBeta)
+// VCT network block reward: 20 WL per block.
 var (
-	VCTBlockReward      = new(big.Int).Mul(big.NewInt(20), big.NewInt(1e+18))
-	VCTTreasuryAddress  = common.HexToAddress("0x4C7dE6771DC602176b25fD4E1ae5550A3eAa06dF")
+	VCTBlockReward       = new(big.Int).Mul(big.NewInt(20), big.NewInt(1e+18))
+	VCTTreasuryAddress   = common.HexToAddress("0x4C7dE6771DC602176b25fD4E1ae5550A3eAa06dF")
 	VCT_HALVING_INTERVAL = uint64(12614400)
 
 	FrontierBlockReward       = big.NewInt(5e+18)
@@ -239,8 +239,10 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 		if err := ecc.verifyVRFProof(chain, header, parent); err != nil {
 			return err
 		}
-		if err := ecc.verifyMiningSig(header, ecc.SealHash(header).Bytes(), isVCT); err != nil {
-			return err
+		if isVCT {
+			if err := ecc.verifyMiningSig(header, ecc.SealHash(header).Bytes(), isVCT); err != nil {
+				return err
+			}
 		}
 	}
 	if err := misc.VerifyDAOHeaderExtraData(chain.Config(), header); err != nil {
@@ -253,8 +255,13 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 }
 
 // verifyVRFProof checks the secp256k1 VRF proof stored in the block header.
+// Pre-VCT blocks (Seoul phase) carry no VRF proof and are skipped.
 // parent must be non-nil; it is used to compute Δt for progressive timeout verification.
 func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent *types.Header) error {
+	if !chain.Config().IsVCT(header.Number) {
+		// Seoul phase: pure ECCPoW, no sortition proof required.
+		return nil
+	}
 	if len(header.VRFProof) == 0 {
 		return errors.New("VCT: VRF proof missing")
 	}
@@ -375,12 +382,22 @@ func (ecc *ECC) verifySeal(chain consensus.ChainHeaderReader, header *types.Head
 		ecc.lock.Unlock()
 	}
 
-	sealHash := ecc.SealHash(header).Bytes()
+	isVCTBlock := chain != nil && chain.Config().IsVCT(header.Number)
+	if chain == nil {
+		// Remote sealer path (chain=nil): infer from VRF proof presence.
+		isVCTBlock = len(header.VRFProof) > 0
+	}
+	var sealHash []byte
+	if isVCTBlock {
+		sealHash = ecc.SealHash(header).Bytes()
+	} else {
+		sealHash = legacySealHash(header).Bytes()
+	}
 	var powSeed []byte
-	if chain.Config().IsVCT(header.Number) {
+	if isVCTBlock {
 		powSeed = computePowSeedVCT(sealHash, header.Nonce.Uint64(), header.VRFSignature)
 	} else {
-		powSeed = computePowSeed(ecc.chainIDBytes(), sealHash, header.Nonce.Uint64(), header.VRFSignature)
+		powSeed = computeLegacyPowSeed(sealHash, header.Nonce.Uint64())
 	}
 
 	var (
@@ -418,7 +435,11 @@ func (ecc *ECC) Prepare(chain consensus.ChainHeaderReader, header *types.Header)
 }
 
 func (ecc *ECC) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header) {
-	accumulateRewards(chain.Config(), state, header, uncles)
+	if chain.Config().IsVCT(header.Number) {
+		accumulateRewards(chain.Config(), state, header, uncles)
+	} else {
+		accumulateRewardsLegacy(chain.Config(), state, header, uncles)
+	}
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 }
 
@@ -437,6 +458,25 @@ func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 	//   VRFPublicKey, VRFProof     — filled in by Seal() before mining starts
 	//   VRFSignature               — per-nonce mining signature
 	//   CodeLength                 — derived from difficulty by mine_seoul and written back
+	enc := []interface{}{
+		header.ParentHash, header.UncleHash, header.Coinbase,
+		header.Root, header.TxHash, header.ReceiptHash,
+		header.Bloom, header.Difficulty, header.Number,
+		header.GasLimit, header.GasUsed, header.Time, header.Extra,
+	}
+	if header.BaseFee != nil {
+		enc = append(enc, header.BaseFee)
+	}
+	rlp.Encode(hasher, enc)
+	hasher.Sum(hash[:0])
+	return hash
+}
+
+// legacySealHash returns the pre-VCT (Seoul-phase) block seal hash.
+// It matches eccpow.SealHash exactly — no domain prefix — so that pre-fork
+// blocks can be cross-validated between old eccpow nodes and this VCT engine.
+func legacySealHash(header *types.Header) (hash common.Hash) {
+	hasher := sha3.NewLegacyKeccak256()
 	enc := []interface{}{
 		header.ParentHash, header.UncleHash, header.Coinbase,
 		header.Root, header.TxHash, header.ReceiptHash,
@@ -480,6 +520,50 @@ var (
 	big8  = big.NewInt(8)
 	big32 = big.NewInt(32)
 )
+
+// accumulateRewardsLegacy mirrors eccpow's reward logic for pre-VCT (Seoul) blocks.
+// 4 WL base reward, no treasury split, with WorldLand halving/maturity schedule.
+func accumulateRewardsLegacy(config *params.ChainConfig, state *state.StateDB, header *types.Header, uncles []*types.Header) {
+	blockReward := new(big.Int).Set(FrontierBlockReward)
+	if config.IsByzantium(header.Number) {
+		blockReward = new(big.Int).Set(ByzantiumBlockReward)
+	}
+	if config.IsConstantinople(header.Number) {
+		blockReward = new(big.Int).Set(ConstantinopleBlockReward)
+	}
+	if config.IsWorldland(header.Number) {
+		blockReward = new(big.Int).Set(WorldLandBlockReward)
+		if config.IsWorldLandHalving(header.Number) {
+			blockHeight := header.Number.Uint64()
+			halvingLevel := (blockHeight - 1 - config.WorldlandBlock.Uint64()) / HALVING_INTERVAL
+			blockReward.Rsh(blockReward, uint(halvingLevel))
+		} else if config.IsWorldLandMaturity(header.Number) {
+			blockHeight := header.Number.Uint64()
+			blockReward = big.NewInt(1e+18)
+			maturityLevel := (blockHeight - 1 - config.HalvingEndTime.Uint64()) / MATURITY_INTERVAL
+			blockReward.Mul(blockReward, SumRewardUntilMaturity)
+			blockReward.Div(blockReward, new(big.Int).SetUint64(MATURITY_INTERVAL))
+			blockReward.Mul(blockReward, big.NewInt(4))
+			blockReward.Div(blockReward, big.NewInt(100))
+			for i := uint64(0); i < maturityLevel; i++ {
+				blockReward.Mul(blockReward, big.NewInt(104))
+				blockReward.Div(blockReward, big.NewInt(100))
+			}
+		}
+	}
+	reward := new(big.Int).Set(blockReward)
+	r := new(big.Int)
+	for _, uncle := range uncles {
+		r.Add(uncle.Number, big8)
+		r.Sub(r, header.Number)
+		r.Mul(r, blockReward)
+		r.Div(r, big8)
+		state.AddBalance(uncle.Coinbase, r)
+		r.Div(blockReward, big32)
+		reward.Add(reward, r)
+	}
+	state.AddBalance(header.Coinbase, reward)
+}
 
 func accumulateRewards(config *params.ChainConfig, state *state.StateDB, header *types.Header, uncles []*types.Header) {
 	blockReward := new(big.Int).Set(VCTBlockReward)

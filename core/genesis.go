@@ -420,70 +420,6 @@ func LoadEccpowConfig(db ethdb.Database, genesis *Genesis) (*params.EccpowConfig
 	return nil, nil
 }
 
-func LoadKaijuConfig(db ethdb.Database, genesis *Genesis) (*params.KaijuConfig, error) {
-	// Load the stored chain config from the database. It can be nil
-	// in case the database is empty. Notably, we only care about the
-	// chain config corresponds to the canonical chain.
-	stored := rawdb.ReadCanonicalHash(db, 0)
-	if stored != (common.Hash{}) {
-		storedcfg := rawdb.ReadChainConfig(db, stored)
-		if storedcfg != nil {
-			return storedcfg.Kaiju, nil
-		}
-	}
-	// Load the kaiju config from the provided genesis specification.
-	if genesis != nil {
-		// Reject invalid genesis spec without valid chain config
-		if genesis.Config == nil {
-			return nil, errGenesisNoConfig
-		}
-		// If the canonical genesis header is present, but the chain
-		// config is missing(initialize the empty leveldb with an
-		// external ancient chain segment), ensure the provided genesis
-		// is matched.
-		if stored != (common.Hash{}) && genesis.ToBlock().Hash() != stored {
-			return nil, &GenesisMismatchError{stored, genesis.ToBlock().Hash()}
-		}
-		return genesis.Config.Kaiju, nil
-	}
-	// There is no stored chain config and no new config provided,
-	// In this case the default chain config(mainnet) will be used,
-	// namely ethash is the specified consensus engine, return nil.
-	return nil, nil
-}
-
-func LoadEccbetaConfig(db ethdb.Database, genesis *Genesis) (*params.EccbetaConfig, error) {
-	// Load the stored chain config from the database. It can be nil
-	// in case the database is empty. Notably, we only care about the
-	// chain config corresponds to the canonical chain.
-	stored := rawdb.ReadCanonicalHash(db, 0)
-	if stored != (common.Hash{}) {
-		storedcfg := rawdb.ReadChainConfig(db, stored)
-		if storedcfg != nil {
-			return storedcfg.Eccbeta, nil
-		}
-	}
-	// Load the eccbeta config from the provided genesis specification.
-	if genesis != nil {
-		// Reject invalid genesis spec without valid chain config
-		if genesis.Config == nil {
-			return nil, errGenesisNoConfig
-		}
-		// If the canonical genesis header is present, but the chain
-		// config is missing(initialize the empty leveldb with an
-		// external ancient chain segment), ensure the provided genesis
-		// is matched.
-		if stored != (common.Hash{}) && genesis.ToBlock().Hash() != stored {
-			return nil, &GenesisMismatchError{stored, genesis.ToBlock().Hash()}
-		}
-		return genesis.Config.Eccbeta, nil
-	}
-	// There is no stored chain config and no new config provided,
-	// In this case the default chain config(mainnet) will be used,
-	// namely ethash is the specified consensus engine, return nil.
-	return nil, nil
-}
-
 func LoadVctConfig(db ethdb.Database, genesis *Genesis) (*params.VctConfig, error) {
 	stored := rawdb.ReadCanonicalHash(db, 0)
 	if stored != (common.Hash{}) {
@@ -526,10 +462,6 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 		return params.GwangjuChainConfig
 	case ghash == params.DaejeonGenesisHash:
 		return params.DaejeonChainConfig
-	case ghash == params.MioGenesisHash:
-		return params.MioChainConfig
-	case ghash == params.BetaGenesisHash:
-		return params.BetaChainConfig
 	default:
 		return params.AllEthashProtocolChanges
 	}
@@ -734,40 +666,6 @@ func DefaultDaejeonGenesisBlock() *Genesis {
 			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): {Balance: balance},
 			common.HexToAddress("0x30593e1F41ec08D982DD1d0077bb522b61a55081"): {Balance: testMinerBalance},
 			common.HexToAddress("0x67c10d6c2073F06f37664992f2D1E5B0543d15b3"): {Balance: testMinerBalance},
-		},
-	}
-}
-
-func DefaultMioGenesisBlock() *Genesis {
-	balanceStr := "40996800000000000000000000"
-	balance, _ := new(big.Int).SetString(balanceStr, 10)
-	return &Genesis{
-		Config:     params.MioChainConfig,
-		Nonce:      10396,
-		Timestamp:  1767262724,
-		ExtraData:  []byte("Worldland Mio"),
-		GasLimit:   30000000,
-		Difficulty: big.NewInt(1023),
-		Alloc: map[common.Address]GenesisAccount{
-			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): {Balance: balance},
-		},
-	}
-}
-
-// DefaultBetaGenesisBlock returns the Beta network genesis block.
-func DefaultBetaGenesisBlock() *Genesis {
-	// Initial allocation for Beta network
-	balanceStr := "40996800000000000000000000"
-	balance, _ := new(big.Int).SetString(balanceStr, 10)
-	return &Genesis{
-		Config:     params.BetaChainConfig,
-		Nonce:      91510,
-		Timestamp:  1709568000, // Placeholder: Update with actual launch timestamp
-		ExtraData:  []byte("Worldland Beta"),
-		GasLimit:   30000000,
-		Difficulty: big.NewInt(1023),
-		Alloc: map[common.Address]GenesisAccount{
-			common.HexToAddress("0x8C98EAeA19F1B9B36af58e7d7E78e0F1df8138f0"): {Balance: balance},
 		},
 	}
 }

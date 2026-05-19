@@ -1360,6 +1360,21 @@ func (bc *BlockChain) WriteBlockAndSetHead(block *types.Block, receipts []*types
 	}
 	defer bc.chainmu.Unlock()
 
+	// WIP-6: S₀ balance-gated proposer eligibility check for miner-produced blocks.
+	if pv, ok := bc.engine.(consensus.ProposerVerifier); ok && block.NumberU64() > 0 {
+		parentHeader := bc.GetHeader(block.ParentHash(), block.NumberU64()-1)
+		if parentHeader == nil {
+			return NonStatTy, consensus.ErrUnknownAncestor
+		}
+		parentState, err := bc.StateAt(parentHeader.Root)
+		if err != nil {
+			return NonStatTy, fmt.Errorf("WIP-6 proposer eligibility parent state unavailable: %w", err)
+		}
+		if err := pv.VerifyProposerEligibility(bc, block.Header(), parentHeader, parentState); err != nil {
+			return NonStatTy, err
+		}
+	}
+
 	return bc.writeBlockAndSetHead(block, receipts, logs, state, emitHeadEvent)
 }
 

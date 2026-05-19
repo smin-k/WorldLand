@@ -6,6 +6,7 @@ package vct
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	crand "crypto/rand"
 	"encoding/json"
 	"errors"
@@ -50,81 +51,79 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		return ecc.shared.Seal(chain, block, results, stop)
 	}
 
-	coinbase := block.Header().Coinbase
-	if err := ecc.EnsureVRFKeys(coinbase); err != nil {
-		return fmt.Errorf("VCT: VRF key error: %w", err)
-	}
-
 	blockNumber := block.Header().Number.Uint64()
-	eligible, proof, err := ecc.IsEligibleForBlock(chain, blockNumber, block.Header().ParentHash)
-	if err != nil {
-		return fmt.Errorf("VCT: sortition check failed: %w", err)
-	}
-
-	// Copy header early; we may need to update Time and Difficulty for the timeout case.
 	header := block.Header()
+	isVCT := chain.Config().IsVCT(header.Number)
 
-	if !eligible {
-		if !chain.Config().IsVCT(header.Number) {
-			// Pre-VCT: reject immediately (legacy behaviour).
-			log.Info("VCT: not eligible for this epoch", "block", blockNumber, "epoch", SortitionEpoch(blockNumber))
-			return errors.New("VCT: not eligible for sortition epoch")
+	if isVCT {
+		coinbase := header.Coinbase
+		if err := ecc.EnsureVRFKeys(coinbase); err != nil {
+			return fmt.Errorf("VCT: VRF key error: %w", err)
 		}
 
-		// WIP-6 progressive timeout: wait until this miner's VRF output falls
-		// below the time-expanded threshold, then mine with the updated timestamp.
-		output, oerr := VRFOutputFromProof(proof)
-		if oerr != nil {
-			return fmt.Errorf("VCT: cannot extract VRF output: %w", oerr)
+		// VCT phase (Rokis+): VRF sortition gates who may propose each block.
+		eligible, proof, err := ecc.IsEligibleForBlock(chain, blockNumber, block.Header().ParentHash)
+		if err != nil {
+			return fmt.Errorf("VCT: sortition check failed: %w", err)
 		}
-		delay := SortitionSubmitDelay(output[0])
 
-		parentHeader := chain.GetHeaderByHash(header.ParentHash)
-		var parentTime uint64
-		if parentHeader != nil {
-			parentTime = parentHeader.Time
-		}
-		submitAt := parentTime + delay
-		log.Info("VCT: not immediately eligible — waiting for progressive timeout",
-			"block", blockNumber, "delay_s", delay, "submitAt", submitAt)
-
-		deadline := time.Unix(int64(submitAt), 0)
-		if waitDur := time.Until(deadline); waitDur > 0 {
-			timer := time.NewTimer(waitDur)
-			select {
-			case <-timer.C:
-			case <-stop:
-				timer.Stop()
-				log.Info("VCT: mining aborted during timeout wait", "block", blockNumber)
-				return nil
+		if !eligible {
+			// WIP-6 progressive timeout: wait until Δt expands the threshold enough.
+			output, oerr := VRFOutputFromProof(proof)
+			if oerr != nil {
+				return fmt.Errorf("VCT: cannot extract VRF output: %w", oerr)
 			}
-			timer.Stop()
+			delay := SortitionSubmitDelay(output[0])
+
+			parentHeader := chain.GetHeaderByHash(header.ParentHash)
+			var parentTime uint64
+			if parentHeader != nil {
+				parentTime = parentHeader.Time
+			}
+			submitAt := parentTime + delay
+			log.Info("VCT: not immediately eligible — waiting for progressive timeout",
+				"block", blockNumber, "delay_s", delay, "submitAt", submitAt)
+
+			deadline := time.Unix(int64(submitAt), 0)
+			if waitDur := time.Until(deadline); waitDur > 0 {
+				timer := time.NewTimer(waitDur)
+				select {
+				case <-timer.C:
+				case <-stop:
+					timer.Stop()
+					log.Info("VCT: mining aborted during timeout wait", "block", blockNumber)
+					return nil
+				}
+				timer.Stop()
+			}
+
+			nowSec := uint64(time.Now().Unix())
+			if nowSec > submitAt {
+				header.Time = nowSec
+			} else {
+				header.Time = submitAt
+			}
+			if parentHeader := chain.GetHeaderByHash(header.ParentHash); parentHeader != nil {
+				header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parentHeader)
+			}
+			log.Info("VCT: progressive timeout elapsed, proceeding with mining",
+				"block", blockNumber, "timestamp", header.Time, "difficulty", header.Difficulty)
+		} else {
+			log.Info("VCT: eligible to mine", "block", blockNumber, "epoch", SortitionEpoch(blockNumber))
 		}
 
-		// Set block timestamp to max(submitAt, now()) so the verifier sees
-		// Δt ≥ delay and accepts the block.
-		nowSec := uint64(time.Now().Unix())
-		if nowSec > submitAt {
-			header.Time = nowSec
-		} else {
-			header.Time = submitAt
-		}
-		// Recalculate difficulty for the updated timestamp (sealHash commits to Difficulty).
-		if parentHeader != nil {
-			header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parentHeader)
-		}
-		log.Info("VCT: progressive timeout elapsed, proceeding with mining",
-			"block", blockNumber, "timestamp", header.Time, "difficulty", header.Difficulty)
+		// Embed VRF proof + public key in the header.
+		header.VRFProof = proof
+		ecc.lock.Lock()
+		header.VRFPublicKey = make([]byte, len(ecc.vrfPubKey))
+		copy(header.VRFPublicKey, ecc.vrfPubKey)
+		ecc.lock.Unlock()
 	} else {
-		log.Info("VCT: eligible to mine", "block", blockNumber, "epoch", SortitionEpoch(blockNumber))
+		// Pre-VCT (Seoul) phase: pure ECCPoW, no sortition gate.
+		// VRFProof and VRFPublicKey are intentionally left empty.
+		log.Debug("VCT: pre-VCT block, skipping sortition", "block", blockNumber)
 	}
 
-	// Embed VRF proof + public key in the header (which may have updated Time/Difficulty).
-	header.VRFProof = proof
-	ecc.lock.Lock()
-	header.VRFPublicKey = make([]byte, len(ecc.vrfPubKey))
-	copy(header.VRFPublicKey, ecc.vrfPubKey)
-	ecc.lock.Unlock()
 	block = block.WithSeal(header)
 
 	abort := make(chan struct{})
@@ -155,7 +154,6 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		pend   sync.WaitGroup
 		locals = make(chan *types.Block)
 	)
-	isVCT := chain.Config().IsVCT(block.Header().Number)
 	for i := 0; i < threads; i++ {
 		pend.Add(1)
 		go func(id int, nonce uint64) {
@@ -192,18 +190,27 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 }
 
 func (ecc *ECC) mine(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block, isVCT bool) {
-	ecc.lock.Lock()
-	seckey := make([]byte, len(ecc.vrfSecKey))
-	copy(seckey, ecc.vrfSecKey)
-	ecc.lock.Unlock()
-
 	header := block.Header()
-	sealHash := ecc.SealHash(header).Bytes()
+	var sealHash []byte
+	if isVCT {
+		sealHash = ecc.SealHash(header).Bytes()
+	} else {
+		sealHash = legacySealHash(header).Bytes()
+	}
 
-	prv, err := crypto.ToECDSA(seckey)
-	if err != nil {
-		log.Error("VCT: mine: invalid VRF key", "err", err)
-		return
+	var prv *ecdsa.PrivateKey
+	if isVCT {
+		ecc.lock.Lock()
+		seckey := make([]byte, len(ecc.vrfSecKey))
+		copy(seckey, ecc.vrfSecKey)
+		ecc.lock.Unlock()
+
+		var err error
+		prv, err = crypto.ToECDSA(seckey)
+		if err != nil {
+			log.Error("VCT: mine: invalid VRF key", "err", err)
+			return
+		}
 	}
 
 	parameters, _ := setParameters(header)
@@ -213,7 +220,6 @@ func (ecc *ECC) mine(block *types.Block, id int, seed uint64, abort chan struct{
 	var (
 		attempts int64
 		nonce    = seed
-		chainID  = ecc.chainIDBytes()
 	)
 	logger := log.New("miner", id)
 	logger.Trace("VCT: started nonce search", "seed", seed)
@@ -232,26 +238,25 @@ search:
 				attempts = 0
 			}
 
-			var sigHash []byte
+			var (
+				digest []byte
+				sigma  []byte
+			)
 			if isVCT {
-				sigHash = computeMiningSigMsgVCT(sealHash, nonce)
+				sigHash := computeMiningSigMsgVCT(sealHash, nonce)
+				var serr error
+				sigma, serr = crypto.Sign(sigHash, prv)
+				if serr != nil {
+					logger.Warn("VCT: mining sign failed", "err", serr)
+					nonce++
+					continue
+				}
+				powSeed := computePowSeedVCT(sealHash, nonce, sigma)
+				digest = crypto.Keccak512(powSeed)
 			} else {
-				sigHash = computeMiningSigMsg(chainID, sealHash, nonce)
+				powSeed := computeLegacyPowSeed(sealHash, nonce)
+				digest = crypto.Keccak512(powSeed)
 			}
-			sigma, serr := crypto.Sign(sigHash, prv)
-			if serr != nil {
-				logger.Warn("VCT: mining sign failed", "err", serr)
-				nonce++
-				continue
-			}
-
-			var powSeed []byte
-			if isVCT {
-				powSeed = computePowSeedVCT(sealHash, nonce, sigma)
-			} else {
-				powSeed = computePowSeed(chainID, sealHash, nonce, sigma)
-			}
-			digest := crypto.Keccak512(powSeed)
 
 			hv := generateHv(parameters, digest)
 			hv, ow, _ := OptimizedDecoding(parameters, hv, H, rowInCol, colInRow)
@@ -260,7 +265,9 @@ search:
 				header.MixDigest = common.BytesToHash(digest)
 				header.Nonce = types.EncodeNonce(nonce)
 				header.Codeword = packCodeword(ow)
-				header.VRFSignature = sigma
+				if isVCT {
+					header.VRFSignature = sigma
+				}
 				select {
 				case found <- block.WithSeal(header):
 				case <-abort:
@@ -273,18 +280,27 @@ search:
 }
 
 func (ecc *ECC) mine_seoul(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block, isVCT bool) {
-	ecc.lock.Lock()
-	seckey := make([]byte, len(ecc.vrfSecKey))
-	copy(seckey, ecc.vrfSecKey)
-	ecc.lock.Unlock()
-
 	header := block.Header()
-	sealHash := ecc.SealHash(header).Bytes()
+	var sealHash []byte
+	if isVCT {
+		sealHash = ecc.SealHash(header).Bytes()
+	} else {
+		sealHash = legacySealHash(header).Bytes()
+	}
 
-	prv, err := crypto.ToECDSA(seckey)
-	if err != nil {
-		log.Error("VCT: mine_seoul: invalid VRF key", "err", err)
-		return
+	var prv *ecdsa.PrivateKey
+	if isVCT {
+		ecc.lock.Lock()
+		seckey := make([]byte, len(ecc.vrfSecKey))
+		copy(seckey, ecc.vrfSecKey)
+		ecc.lock.Unlock()
+
+		var err error
+		prv, err = crypto.ToECDSA(seckey)
+		if err != nil {
+			log.Error("VCT: mine_seoul: invalid VRF key", "err", err)
+			return
+		}
 	}
 
 	parameters, _ := setParameters_Seoul(header)
@@ -294,7 +310,6 @@ func (ecc *ECC) mine_seoul(block *types.Block, id int, seed uint64, abort chan s
 	var (
 		attempts int64
 		nonce    = seed
-		chainID  = ecc.chainIDBytes()
 	)
 	logger := log.New("miner", id)
 	logger.Trace("VCT: started Seoul nonce search", "seed", seed)
@@ -313,26 +328,25 @@ search:
 				attempts = 0
 			}
 
-			var sigHash []byte
+			var (
+				digest []byte
+				sigma  []byte
+			)
 			if isVCT {
-				sigHash = computeMiningSigMsgVCT(sealHash, nonce)
+				sigHash := computeMiningSigMsgVCT(sealHash, nonce)
+				var serr error
+				sigma, serr = crypto.Sign(sigHash, prv)
+				if serr != nil {
+					logger.Warn("VCT: mining sign failed", "err", serr)
+					nonce++
+					continue
+				}
+				powSeed := computePowSeedVCT(sealHash, nonce, sigma)
+				digest = crypto.Keccak512(powSeed)
 			} else {
-				sigHash = computeMiningSigMsg(chainID, sealHash, nonce)
+				powSeed := computeLegacyPowSeed(sealHash, nonce)
+				digest = crypto.Keccak512(powSeed)
 			}
-			sigma, serr := crypto.Sign(sigHash, prv)
-			if serr != nil {
-				logger.Warn("VCT: mining sign failed", "err", serr)
-				nonce++
-				continue
-			}
-
-			var powSeed []byte
-			if isVCT {
-				powSeed = computePowSeedVCT(sealHash, nonce, sigma)
-			} else {
-				powSeed = computePowSeed(chainID, sealHash, nonce, sigma)
-			}
-			digest := crypto.Keccak512(powSeed)
 
 			hv := generateHv(parameters, digest)
 			hv, ow, _ := OptimizedDecodingSeoul(parameters, hv, H, rowInCol, colInRow)
@@ -342,7 +356,9 @@ search:
 				header.MixDigest = common.BytesToHash(digest)
 				header.Nonce = types.EncodeNonce(nonce)
 				header.Codeword = packCodeword(ow)
-				header.VRFSignature = sigma
+				if isVCT {
+					header.VRFSignature = sigma
+				}
 				select {
 				case found <- block.WithSeal(header):
 				case <-abort:
@@ -499,7 +515,11 @@ func (s *remoteSealer) loop() {
 }
 
 func (s *remoteSealer) makeWork(block *types.Block) {
-	hash := s.ecc.SealHash(block.Header())
+	header := block.Header()
+	hash := s.ecc.SealHash(header)
+	if len(header.VRFProof) == 0 {
+		hash = legacySealHash(header)
+	}
 	s.currentWork[0] = hash.Hex()
 	s.currentWork[1] = common.BytesToHash(SeedHash(block.NumberU64())).Hex()
 	s.currentWork[2] = common.BytesToHash(new(big.Int).Div(two256, block.Difficulty()).Bytes()).Hex()

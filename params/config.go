@@ -36,8 +36,6 @@ var (
 
 	SeoulGenesisHash   = common.HexToHash("0x5bd83be2a4c3a01b45e48fe181de1e6173d92cf5b54790fe64962dd2a7f25abb")
 	GwangjuGenesisHash = common.HexToHash("0x64130a2624d46bda6aacf0c1ec34ab3d926e31b8438141a10e7412070064f0bf")
-	MioGenesisHash     = common.HexToHash("")
-	BetaGenesisHash    = common.HexToHash("") // To be filled after genesis block creation
 	DaejeonGenesisHash = common.HexToHash("0xa37bd66c7afce1a5604c402d7690724343d442368822373cec849d5ada5f32ef")
 )
 
@@ -344,7 +342,7 @@ var (
 		Eccpow:              new(EccpowConfig),
 	}
 
-	// DaejeonChainConfig is the VCT testnet — WIP-6 active from block 0.
+	// DaejeonChainConfig is the VCT testnet — ECCPoW (Seoul) until block 100, then Rokis (VCT) hard fork.
 	DaejeonChainConfig = &ChainConfig{
 		ChainID:             big.NewInt(10399),
 		HomesteadBlock:      big.NewInt(0),
@@ -362,58 +360,11 @@ var (
 		WorldlandBlock:      big.NewInt(0),
 		SeoulBlock:          big.NewInt(0),
 		AnnapurnaBlock:      big.NewInt(0),
-		VCTBlock:            big.NewInt(0),
+		VCTBlock:            big.NewInt(100), // Rokis hard fork: VCT consensus activates at block 100
 		HalvingEndTime:      big.NewInt(25228800),
 		Vct: &VctConfig{
-			// S₀ = 10 WL for blocks 0-9; drops to 0 at block 10 (S₀ fork test).
-			MinEligibleBalance: new(big.Int).Mul(big.NewInt(10), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)),
-			S0ForkBlock:        big.NewInt(10),
-			S0ForkBalance:      new(big.Int),
+			MinEligibleBalance: new(big.Int).Mul(big.NewInt(100), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)),
 		},
-	}
-
-	MioChainConfig = &ChainConfig{
-		ChainID:             big.NewInt(10396),
-		HomesteadBlock:      big.NewInt(0),
-		DAOForkBlock:        nil,
-		DAOForkSupport:      true,
-		EIP150Block:         big.NewInt(0),
-		EIP155Block:         big.NewInt(0),
-		EIP158Block:         big.NewInt(0),
-		ByzantiumBlock:      big.NewInt(0),
-		ConstantinopleBlock: big.NewInt(0),
-		PetersburgBlock:     big.NewInt(0),
-		IstanbulBlock:       big.NewInt(0),
-		BerlinBlock:         big.NewInt(0),
-		LondonBlock:         big.NewInt(0),
-		WorldlandBlock:      big.NewInt(0),
-		SeoulBlock:          big.NewInt(0),
-		AnnapurnaBlock:      big.NewInt(0),
-		MioBlock:            big.NewInt(0),
-		HalvingEndTime:      big.NewInt(25228800),
-		Kaiju:               new(KaijuConfig),
-	}
-
-	BetaChainConfig = &ChainConfig{
-		ChainID:             big.NewInt(91510),
-		HomesteadBlock:      big.NewInt(0),
-		DAOForkBlock:        nil,
-		DAOForkSupport:      true,
-		EIP150Block:         big.NewInt(0),
-		EIP155Block:         big.NewInt(0),
-		EIP158Block:         big.NewInt(0),
-		ByzantiumBlock:      big.NewInt(0),
-		ConstantinopleBlock: big.NewInt(0),
-		PetersburgBlock:     big.NewInt(0),
-		IstanbulBlock:       big.NewInt(0),
-		BerlinBlock:         big.NewInt(0),
-		LondonBlock:         big.NewInt(0),
-		WorldlandBlock:      big.NewInt(0),
-		SeoulBlock:          big.NewInt(0),
-		AnnapurnaBlock:      big.NewInt(0),
-		BetaBlock:           big.NewInt(0),
-		HalvingEndTime:      big.NewInt(50457600), // 4 halvings * 4 years
-		Eccbeta:             new(EccbetaConfig),
 	}
 
 	/* SeoulTrustedCheckpoint contains the light client trusted checkpoint for the Gwangju test network.
@@ -486,18 +437,72 @@ var (
 	// AllEthashProtocolChanges contains every protocol change (EIPs) introduced
 	// and accepted by the Ethereum core developers into the Ethash consensus.
 	//
-	// This configuration is intentionally not using keyed fields to force anyone
-	// adding flags to the config to also have to set these fields.
-	AllEthashProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, new(EthashConfig), nil, nil, nil, nil, nil}
+	AllEthashProtocolChanges = &ChainConfig{
+		ChainID:             big.NewInt(1337),
+		HomesteadBlock:      big.NewInt(0),
+		EIP150Block:         big.NewInt(0),
+		EIP155Block:         big.NewInt(0),
+		EIP158Block:         big.NewInt(0),
+		ByzantiumBlock:      big.NewInt(0),
+		ConstantinopleBlock: big.NewInt(0),
+		PetersburgBlock:     big.NewInt(0),
+		IstanbulBlock:       big.NewInt(0),
+		MuirGlacierBlock:    big.NewInt(0),
+		BerlinBlock:         big.NewInt(0),
+		LondonBlock:         big.NewInt(0),
+		ArrowGlacierBlock:   big.NewInt(0),
+		GrayGlacierBlock:    big.NewInt(0),
+		WorldlandBlock:      big.NewInt(0),
+		HalvingEndTime:      big.NewInt(0),
+		SeoulBlock:          big.NewInt(0),
+		AnnapurnaBlock:      big.NewInt(0),
+		Ethash:              new(EthashConfig),
+	}
 
 	// AllCliqueProtocolChanges contains every protocol change (EIPs) introduced
 	// and accepted by the Ethereum core developers into the Clique consensus.
 	//
-	// This configuration is intentionally not using keyed fields to force anyone
-	// adding flags to the config to also have to set these fields.
-	AllCliqueProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, nil, &CliqueConfig{Period: 0, Epoch: 30000}, nil, nil, nil, nil}
+	AllCliqueProtocolChanges = &ChainConfig{
+		ChainID:             big.NewInt(1337),
+		HomesteadBlock:      big.NewInt(0),
+		EIP150Block:         big.NewInt(0),
+		EIP155Block:         big.NewInt(0),
+		EIP158Block:         big.NewInt(0),
+		ByzantiumBlock:      big.NewInt(0),
+		ConstantinopleBlock: big.NewInt(0),
+		PetersburgBlock:     big.NewInt(0),
+		IstanbulBlock:       big.NewInt(0),
+		MuirGlacierBlock:    big.NewInt(0),
+		BerlinBlock:         big.NewInt(0),
+		LondonBlock:         big.NewInt(0),
+		WorldlandBlock:      big.NewInt(0),
+		HalvingEndTime:      big.NewInt(0),
+		SeoulBlock:          big.NewInt(0),
+		AnnapurnaBlock:      big.NewInt(0),
+		Clique:              &CliqueConfig{Period: 0, Epoch: 30000},
+	}
 
-	TestChainConfig = &ChainConfig{big.NewInt(1), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, new(EthashConfig), nil, nil, nil, nil, nil}
+	TestChainConfig = &ChainConfig{
+		ChainID:             big.NewInt(1),
+		HomesteadBlock:      big.NewInt(0),
+		EIP150Block:         big.NewInt(0),
+		EIP155Block:         big.NewInt(0),
+		EIP158Block:         big.NewInt(0),
+		ByzantiumBlock:      big.NewInt(0),
+		ConstantinopleBlock: big.NewInt(0),
+		PetersburgBlock:     big.NewInt(0),
+		IstanbulBlock:       big.NewInt(0),
+		MuirGlacierBlock:    big.NewInt(0),
+		BerlinBlock:         big.NewInt(0),
+		LondonBlock:         big.NewInt(0),
+		ArrowGlacierBlock:   big.NewInt(0),
+		GrayGlacierBlock:    big.NewInt(0),
+		WorldlandBlock:      big.NewInt(0),
+		HalvingEndTime:      big.NewInt(0),
+		SeoulBlock:          big.NewInt(0),
+		AnnapurnaBlock:      big.NewInt(0),
+		Ethash:              new(EthashConfig),
+	}
 	//NonActivatedConfig = &ChainConfig{big.NewInt(1), nil, nil, false, nil, common.Hash{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, new(EthashConfig), nil, nil}
 	TestRules = TestChainConfig.Rules(new(big.Int), false)
 )
@@ -512,8 +517,6 @@ var NetworkNames = map[string]string{
 	SeoulChainConfig.ChainID.String():   "seoul",
 	GwangjuChainConfig.ChainID.String(): "gwangju",
 	DaejeonChainConfig.ChainID.String(): "daejeon",
-	MioChainConfig.ChainID.String():     "mio",
-	BetaChainConfig.ChainID.String():    "beta",
 }
 
 // TrustedCheckpoint represents a set of post-processed trie roots (CHT and
@@ -601,9 +604,7 @@ type ChainConfig struct {
 	HalvingEndTime *big.Int `json:"HalvingEndTime,omitempty"`
 	SeoulBlock     *big.Int `json:"seoulBlock,omitempty"`
 	AnnapurnaBlock *big.Int `json:"AnnapurnaBlock,omitempty"`
-	MioBlock       *big.Int `json:"MioBlock,omitempty"`
-	BetaBlock      *big.Int `json:"betaBlock,omitempty"` // Beta switch block (nil = no fork, 0 = already on beta)
-	VCTBlock       *big.Int `json:"vctBlock,omitempty"`  // VCT (WIP-6) switch block (nil = no fork)
+	VCTBlock       *big.Int `json:"vctBlock,omitempty"` // VCT (WIP-6) switch block (nil = no fork)
 
 	// TerminalTotalDifficulty is the amount of total difficulty reached by
 	// the network that triggers the consensus upgrade.
@@ -615,12 +616,10 @@ type ChainConfig struct {
 	TerminalTotalDifficultyPassed bool `json:"terminalTotalDifficultyPassed,omitempty"`
 
 	// Various consensus engines
-	Ethash  *EthashConfig  `json:"ethash,omitempty"`
-	Clique  *CliqueConfig  `json:"clique,omitempty"`
-	Eccpow  *EccpowConfig  `json:"eccpow,omitempty"`
-	Kaiju   *KaijuConfig   `json:"kaiju,omitempty"`
-	Eccbeta *EccbetaConfig `json:"eccbeta,omitempty"`
-	Vct     *VctConfig     `json:"vct,omitempty"` // WIP-6 VCT engine (superset of ECCPoW)
+	Ethash *EthashConfig `json:"ethash,omitempty"`
+	Clique *CliqueConfig `json:"clique,omitempty"`
+	Eccpow *EccpowConfig `json:"eccpow,omitempty"`
+	Vct    *VctConfig    `json:"vct,omitempty"` // WIP-6 VCT engine (superset of ECCPoW)
 }
 
 // EthashConfig is the consensus engine configs for proof-of-work based sealing.
@@ -628,12 +627,6 @@ type EthashConfig struct{}
 
 // EccpowConfig is the consensus engine configs for proof-of-work based sealing.
 type EccpowConfig struct{}
-
-// KaijuConfig is the consensus engine configs for proof-of-work based sealing.
-type KaijuConfig struct{}
-
-// EccbetaConfig is the consensus engine configs for Beta network proof-of-work.
-type EccbetaConfig struct{}
 
 // VctConfig is the consensus engine config for the VCT (WIP-6) network.
 type VctConfig struct {
@@ -665,14 +658,6 @@ func (c *EthashConfig) String() string {
 // String implements the stringer interface, returning the consensus engine details.
 func (c *EccpowConfig) String() string {
 	return "eccpow"
-}
-
-func (c *KaijuConfig) String() string {
-	return "Kaiju"
-}
-
-func (c *EccbetaConfig) String() string {
-	return "eccbeta"
 }
 
 // CliqueConfig is the consensus engine configs for proof-of-authority based sealing.
@@ -721,22 +706,6 @@ func (c *ChainConfig) String() string {
 		} else {
 			banner += "Consensus: Beacon (proof-of-stake), merged from Eccpow (proof-of-work)\n"
 		}
-	case c.Kaiju != nil:
-		if c.TerminalTotalDifficulty == nil {
-			banner += "Consensus: Kaiju (proof-of-work with VRF sortition)\n"
-		} else if !c.TerminalTotalDifficultyPassed {
-			banner += "Consensus: Kaiju (proof-of-work with VRF sortition)\n"
-		} else {
-			banner += "Consensus: Kaiju (proof-of-work with VRF sortition)\n"
-		}
-	case c.Eccbeta != nil:
-		if c.TerminalTotalDifficulty == nil {
-			banner += "Consensus: ECCBeta (proof-of-work)\n"
-		} else if !c.TerminalTotalDifficultyPassed {
-			banner += "Consensus: Beacon (proof-of-stake), merging from ECCBeta (proof-of-work)\n"
-		} else {
-			banner += "Consensus: Beacon (proof-of-stake), merged from ECCBeta (proof-of-work)\n"
-		}
 	default:
 		banner += "Consensus: unknown\n"
 	}
@@ -783,9 +752,6 @@ func (c *ChainConfig) String() string {
 		}*/
 	if c.AnnapurnaBlock != nil {
 		banner += fmt.Sprintf(" - Annapurna:                       %-8v\n", c.AnnapurnaBlock)
-	}
-	if c.BetaBlock != nil {
-		banner += fmt.Sprintf(" - Beta:                            %-8v\n", c.BetaBlock)
 	}
 	banner += "\n"
 
@@ -921,28 +887,9 @@ func (c *ChainConfig) IsAnnapurna(num *big.Int) bool {
 	return isForked(c.AnnapurnaBlock, num)
 }
 
-func (c *ChainConfig) IsMio(num *big.Int) bool {
-	return isForked(c.MioBlock, num)
-}
-
-// IsBeta returns whether num is either equal to the Beta fork block or greater.
-func (c *ChainConfig) IsBeta(num *big.Int) bool {
-	return isForked(c.BetaBlock, num)
-}
-
 // IsVCT returns whether num is either equal to the VCT (WIP-6) fork block or greater.
 func (c *ChainConfig) IsVCT(num *big.Int) bool {
 	return isForked(c.VCTBlock, num)
-}
-
-// IsBetaHalving returns whether num is in the Beta halving period.
-func (c *ChainConfig) IsBetaHalving(num *big.Int) bool {
-	return isHalving(c.HalvingEndTime, num)
-}
-
-// IsBetaMaturity returns whether num is past the Beta halving period (maturity phase).
-func (c *ChainConfig) IsBetaMaturity(num *big.Int) bool {
-	return isMatured(c.HalvingEndTime, num)
 }
 
 // CheckCompatible checks whether scheduled fork transitions have been imported

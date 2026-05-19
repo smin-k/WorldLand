@@ -112,6 +112,15 @@ func computePowSeedVCT(sealHash []byte, nonce uint64, sigma []byte) []byte {
 	return crypto.Keccak256(raw)
 }
 
+// computeLegacyPowSeed returns the pre-VCT ECCPoW seed input:
+// sealHash || nonce_LE8. The LDPC verifier applies Keccak512 to this raw seed.
+func computeLegacyPowSeed(sealHash []byte, nonce uint64) []byte {
+	raw := make([]byte, 32+8)
+	copy(raw[:32], sealHash)
+	binary.LittleEndian.PutUint64(raw[32:40], nonce)
+	return raw
+}
+
 // computeVRFMsg returns the WIP-6 VRF input message:
 // VCT_VRF || chainId (32 bytes) || phash_{h-1} (32 bytes) || h (8 bytes BE).
 func computeVRFMsg(chainIDBytes, parentHash []byte, blockNumber uint64) []byte {
@@ -379,7 +388,9 @@ func (ecc *ECC) VerifyProposerEligibility(chain consensus.ChainHeaderReader, hea
 	return nil
 }
 
-// EnsureVRFKeys checks whether VRF keys match coinbase and re-derives if not.
+// EnsureVRFKeys verifies that the account key has been registered for the given
+// coinbase via SetVRFKey. Mining without an unlocked account is rejected so that
+// the fake address-derived key can never be used silently.
 func (ecc *ECC) EnsureVRFKeys(coinbase common.Address) error {
 	ecc.lock.Lock()
 	defer ecc.lock.Unlock()
@@ -387,16 +398,7 @@ func (ecc *ECC) EnsureVRFKeys(coinbase common.Address) error {
 	if ecc.vrfCoinbase == coinbase && len(ecc.vrfSecKey) > 0 && len(ecc.vrfPubKey) > 0 {
 		return nil
 	}
-
-	seckey, pubkey, err := secp256k1.DeriveVRFKeys(coinbase, nil)
-	if err != nil {
-		return fmt.Errorf("VCT: failed to derive VRF keys: %w", err)
-	}
-	ecc.vrfSecKey = seckey
-	ecc.vrfPubKey = pubkey
-	ecc.vrfCoinbase = coinbase
-	log.Info("VCT: VRF keys derived", "coinbase", coinbase)
-	return nil
+	return fmt.Errorf("VCT: account key not set for coinbase %s — unlock the account with --unlock before mining", coinbase.Hex())
 }
 
 // SetVRFKey sets an explicit secp256k1 private key (32 bytes) as the VRF key.

@@ -1196,6 +1196,14 @@ func RPCMarshalHeader(head *types.Header) map[string]interface{} {
 		result["vrfPublicKey"] = hexutil.Bytes(head.VRFPublicKey)
 	}
 
+	if head.VRFSignature != nil {
+		result["vrfSignature"] = hexutil.Bytes(head.VRFSignature)
+	}
+
+	if head.SortitionThreshold != nil {
+		result["sortitionThreshold"] = (*hexutil.Big)(head.SortitionThreshold)
+	}
+
 	return result
 }
 

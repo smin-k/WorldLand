@@ -16,28 +16,29 @@ var _ = (*headerMarshaling)(nil)
 // MarshalJSON marshals as JSON.
 func (h Header) MarshalJSON() ([]byte, error) {
 	type Header struct {
-		ParentHash   common.Hash    `json:"parentHash"       gencodec:"required"`
-		UncleHash    common.Hash    `json:"sha3Uncles"       gencodec:"required"`
-		Coinbase     common.Address `json:"miner"`
-		Root         common.Hash    `json:"stateRoot"        gencodec:"required"`
-		TxHash       common.Hash    `json:"transactionsRoot" gencodec:"required"`
-		ReceiptHash  common.Hash    `json:"receiptsRoot"     gencodec:"required"`
-		Bloom        Bloom          `json:"logsBloom"        gencodec:"required"`
-		Difficulty   *hexutil.Big   `json:"difficulty"       gencodec:"required"`
-		Number       *hexutil.Big   `json:"number"           gencodec:"required"`
-		GasLimit     hexutil.Uint64 `json:"gasLimit"         gencodec:"required"`
-		GasUsed      hexutil.Uint64 `json:"gasUsed"          gencodec:"required"`
-		Time         hexutil.Uint64 `json:"timestamp"        gencodec:"required"`
-		Extra        hexutil.Bytes  `json:"extraData"        gencodec:"required"`
-		MixDigest    common.Hash    `json:"mixHash"`
-		Nonce        BlockNonce     `json:"nonce"`
-		BaseFee      *hexutil.Big   `json:"baseFeePerGas"    rlp:"optional"`
-		Hash         common.Hash    `json:"hash"`
-		Codeword     hexutil.Bytes  `json:"codeword"         rlp:"optional"`
-		CodeLength   hexutil.Uint64 `json:"codelength"       rlp:"optional"`
-		VRFProof     hexutil.Bytes  `json:"vrfProof"         rlp:"optional"`
-		VRFPublicKey hexutil.Bytes  `json:"vrfPublicKey"     rlp:"optional"`
-		VRFSignature hexutil.Bytes  `json:"vrfSignature"     rlp:"optional"`
+		ParentHash         common.Hash    `json:"parentHash"       gencodec:"required"`
+		UncleHash          common.Hash    `json:"sha3Uncles"       gencodec:"required"`
+		Coinbase           common.Address `json:"miner"`
+		Root               common.Hash    `json:"stateRoot"        gencodec:"required"`
+		TxHash             common.Hash    `json:"transactionsRoot" gencodec:"required"`
+		ReceiptHash        common.Hash    `json:"receiptsRoot"     gencodec:"required"`
+		Bloom              Bloom          `json:"logsBloom"        gencodec:"required"`
+		Difficulty         *hexutil.Big   `json:"difficulty"       gencodec:"required"`
+		Number             *hexutil.Big   `json:"number"           gencodec:"required"`
+		GasLimit           hexutil.Uint64 `json:"gasLimit"         gencodec:"required"`
+		GasUsed            hexutil.Uint64 `json:"gasUsed"          gencodec:"required"`
+		Time               hexutil.Uint64 `json:"timestamp"        gencodec:"required"`
+		Extra              hexutil.Bytes  `json:"extraData"        gencodec:"required"`
+		MixDigest          common.Hash    `json:"mixHash"`
+		Nonce              BlockNonce     `json:"nonce"`
+		BaseFee            *hexutil.Big   `json:"baseFeePerGas"    rlp:"optional"`
+		Hash               common.Hash    `json:"hash"`
+		Codeword           hexutil.Bytes  `json:"codeword"         rlp:"optional"`
+		CodeLength         hexutil.Uint64 `json:"codelength"       rlp:"optional"`
+		VRFProof           hexutil.Bytes  `json:"vrfProof"         rlp:"optional"`
+		VRFPublicKey       hexutil.Bytes  `json:"vrfPublicKey"     rlp:"optional"`
+		VRFSignature       hexutil.Bytes  `json:"vrfSignature"     rlp:"optional"`
+		SortitionThreshold *hexutil.Big   `json:"sortitionThreshold" rlp:"optional"`
 	}
 	var enc Header
 	enc.ParentHash = h.ParentHash
@@ -62,33 +63,35 @@ func (h Header) MarshalJSON() ([]byte, error) {
 	enc.VRFProof = h.VRFProof
 	enc.VRFPublicKey = h.VRFPublicKey
 	enc.VRFSignature = h.VRFSignature
+	enc.SortitionThreshold = (*hexutil.Big)(h.SortitionThreshold)
 	return json.Marshal(&enc)
 }
 
 // UnmarshalJSON unmarshals from JSON.
 func (h *Header) UnmarshalJSON(input []byte) error {
 	type Header struct {
-		ParentHash   *common.Hash    `json:"parentHash"       gencodec:"required"`
-		UncleHash    *common.Hash    `json:"sha3Uncles"       gencodec:"required"`
-		Coinbase     *common.Address `json:"miner"`
-		Root         *common.Hash    `json:"stateRoot"        gencodec:"required"`
-		TxHash       *common.Hash    `json:"transactionsRoot" gencodec:"required"`
-		ReceiptHash  *common.Hash    `json:"receiptsRoot"     gencodec:"required"`
-		Bloom        *Bloom          `json:"logsBloom"        gencodec:"required"`
-		Difficulty   *hexutil.Big    `json:"difficulty"       gencodec:"required"`
-		Number       *hexutil.Big    `json:"number"           gencodec:"required"`
-		GasLimit     *hexutil.Uint64 `json:"gasLimit"         gencodec:"required"`
-		GasUsed      *hexutil.Uint64 `json:"gasUsed"          gencodec:"required"`
-		Time         *hexutil.Uint64 `json:"timestamp"        gencodec:"required"`
-		Extra        *hexutil.Bytes  `json:"extraData"        gencodec:"required"`
-		MixDigest    *common.Hash    `json:"mixHash"`
-		Nonce        *BlockNonce     `json:"nonce"`
-		BaseFee      *hexutil.Big    `json:"baseFeePerGas"    rlp:"optional"`
-		Codeword     *hexutil.Bytes  `json:"codeword"         rlp:"optional"`
-		CodeLength   *hexutil.Uint64 `json:"codelength"       rlp:"optional"`
-		VRFProof     *hexutil.Bytes  `json:"vrfProof"         rlp:"optional"`
-		VRFPublicKey *hexutil.Bytes  `json:"vrfPublicKey"     rlp:"optional"`
-		VRFSignature *hexutil.Bytes  `json:"vrfSignature"     rlp:"optional"`
+		ParentHash         *common.Hash    `json:"parentHash"       gencodec:"required"`
+		UncleHash          *common.Hash    `json:"sha3Uncles"       gencodec:"required"`
+		Coinbase           *common.Address `json:"miner"`
+		Root               *common.Hash    `json:"stateRoot"        gencodec:"required"`
+		TxHash             *common.Hash    `json:"transactionsRoot" gencodec:"required"`
+		ReceiptHash        *common.Hash    `json:"receiptsRoot"     gencodec:"required"`
+		Bloom              *Bloom          `json:"logsBloom"        gencodec:"required"`
+		Difficulty         *hexutil.Big    `json:"difficulty"       gencodec:"required"`
+		Number             *hexutil.Big    `json:"number"           gencodec:"required"`
+		GasLimit           *hexutil.Uint64 `json:"gasLimit"         gencodec:"required"`
+		GasUsed            *hexutil.Uint64 `json:"gasUsed"          gencodec:"required"`
+		Time               *hexutil.Uint64 `json:"timestamp"        gencodec:"required"`
+		Extra              *hexutil.Bytes  `json:"extraData"        gencodec:"required"`
+		MixDigest          *common.Hash    `json:"mixHash"`
+		Nonce              *BlockNonce     `json:"nonce"`
+		BaseFee            *hexutil.Big    `json:"baseFeePerGas"    rlp:"optional"`
+		Codeword           *hexutil.Bytes  `json:"codeword"         rlp:"optional"`
+		CodeLength         *hexutil.Uint64 `json:"codelength"       rlp:"optional"`
+		VRFProof           *hexutil.Bytes  `json:"vrfProof"         rlp:"optional"`
+		VRFPublicKey       *hexutil.Bytes  `json:"vrfPublicKey"     rlp:"optional"`
+		VRFSignature       *hexutil.Bytes  `json:"vrfSignature"     rlp:"optional"`
+		SortitionThreshold *hexutil.Big    `json:"sortitionThreshold" rlp:"optional"`
 	}
 	var dec Header
 	if err := json.Unmarshal(input, &dec); err != nil {
@@ -168,6 +171,9 @@ func (h *Header) UnmarshalJSON(input []byte) error {
 	}
 	if dec.VRFSignature != nil {
 		h.VRFSignature = *dec.VRFSignature
+	}
+	if dec.SortitionThreshold != nil {
+		h.SortitionThreshold = (*big.Int)(dec.SortitionThreshold)
 	}
 
 	return nil

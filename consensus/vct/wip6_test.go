@@ -23,7 +23,7 @@ type mockChainReader struct {
 	headers map[common.Hash]*types.Header
 }
 
-func (m *mockChainReader) Config() *params.ChainConfig { return m.cfg }
+func (m *mockChainReader) Config() *params.ChainConfig  { return m.cfg }
 func (m *mockChainReader) CurrentHeader() *types.Header { return nil }
 func (m *mockChainReader) GetHeader(hash common.Hash, number uint64) *types.Header {
 	return m.headers[hash]
@@ -109,17 +109,17 @@ func TestLegacySealHashMatchesECCPoW(t *testing.T) {
 func TestWIP6ProgressiveTimeoutSortition(t *testing.T) {
 	var output [32]byte
 
-	output[0] = SortitionBase - 1
+	output[0] = 0x1f
 	if !SortitionEligible(output, 0) {
 		t.Fatal("base-eligible output rejected")
 	}
 
-	output[0] = SortitionBase
+	output[0] = 0x20
 	if SortitionEligible(output, TimeoutStart-1) {
 		t.Fatal("non-base output accepted before timeout start")
 	}
 
-	delay := SortitionSubmitDelay(output[0])
+	delay := SortitionSubmitDelay(output)
 	if delay < TimeoutStart || delay > TimeoutEnd {
 		t.Fatalf("submit delay out of range: %d", delay)
 	}
@@ -133,8 +133,86 @@ func TestWIP6ProgressiveTimeoutSortition(t *testing.T) {
 	}
 }
 
+func TestWIP6AdaptiveSortitionThreshold(t *testing.T) {
+	cfg := &params.ChainConfig{
+		ChainID:  big.NewInt(10399),
+		VCTBlock: big.NewInt(100),
+		Vct:      &params.VctConfig{},
+	}
+	ecc := &ECC{config: Config{Log: log.Root()}, chainID: big.NewInt(10399)}
+
+	preForkParent := &types.Header{
+		Number:     big.NewInt(99),
+		UncleHash:  types.EmptyUncleHash,
+		Difficulty: new(big.Int).Mul(MinimumDifficulty, big.NewInt(16)),
+		Time:       1000,
+	}
+	chain := &mockChainReader{
+		cfg:     cfg,
+		headers: map[common.Hash]*types.Header{preForkParent.Hash(): preForkParent},
+	}
+	if got := ecc.CalcSortitionThreshold(chain, preForkParent.Time+1, preForkParent); got.Cmp(SortitionThresholdMax) != 0 {
+		t.Fatalf("first VCT threshold = %v, want %v", got, SortitionThresholdMax)
+	}
+
+	vctParent := &types.Header{
+		ParentHash:         preForkParent.Hash(),
+		Number:             big.NewInt(100),
+		UncleHash:          types.EmptyUncleHash,
+		Difficulty:         new(big.Int).Set(preForkParent.Difficulty),
+		Time:               preForkParent.Time + 1,
+		SortitionThreshold: SortitionThresholdMax,
+	}
+	chain.headers[vctParent.Hash()] = vctParent
+
+	threshold := ecc.CalcSortitionThreshold(chain, vctParent.Time+1, vctParent)
+	if threshold.Cmp(SortitionThresholdMax) >= 0 {
+		t.Fatalf("fast block did not lower threshold: got %v", threshold)
+	}
+	if threshold.Cmp(SortitionBase) < 0 {
+		t.Fatalf("threshold below SortitionBase: got %v, base %v", threshold, SortitionBase)
+	}
+	if diff := ecc.CalcDifficulty(chain, vctParent.Time+1, vctParent); diff.Cmp(vctParent.Difficulty) != 0 {
+		t.Fatalf("difficulty changed during threshold bootstrap: got %v want %v", diff, vctParent.Difficulty)
+	}
+
+	slowDiff := ecc.CalcDifficulty(chain, vctParent.Time+uint64(BlockGenerationTime.Int64()*2), vctParent)
+	if slowDiff.Cmp(vctParent.Difficulty) >= 0 {
+		t.Fatalf("difficulty did not decrease when threshold was already maxed and block was slow: got %v parent %v", slowDiff, vctParent.Difficulty)
+	}
+
+	vctParent.SortitionThreshold = new(big.Int).Set(SortitionBase)
+	if diff := ecc.CalcDifficulty(chain, vctParent.Time+1, vctParent); diff.Cmp(vctParent.Difficulty) <= 0 {
+		t.Fatalf("difficulty did not resume after threshold reached base: got %v parent %v", diff, vctParent.Difficulty)
+	}
+}
+
+func TestWIP6RokisDifficultyFloorAtFork(t *testing.T) {
+	cfg := &params.ChainConfig{
+		ChainID:  big.NewInt(10399),
+		VCTBlock: big.NewInt(100),
+		Vct:      &params.VctConfig{},
+	}
+	ecc := &ECC{config: Config{Log: log.Root()}, chainID: big.NewInt(10399)}
+	parent := &types.Header{
+		Number:     big.NewInt(99),
+		UncleHash:  types.EmptyUncleHash,
+		Difficulty: big.NewInt(1023),
+		Time:       1000,
+	}
+	chain := &mockChainReader{
+		cfg:     cfg,
+		headers: map[common.Hash]*types.Header{parent.Hash(): parent},
+	}
+	diff := ecc.CalcDifficulty(chain, parent.Time+1, parent)
+	if diff.Cmp(RokisDifficulty) != 0 {
+		t.Fatalf("first Rokis difficulty = %v, want floor %v", diff, RokisDifficulty)
+	}
+}
+
 // TestVCTVRFFullPipeline exercises the complete VRF pipeline in WIP-6 mode:
-//   SetVRFKey → EnsureVRFKeys → IsEligibleForBlock → verifyVRFProof → verifyMiningSig
+//
+//	SetVRFKey → EnsureVRFKeys → IsEligibleForBlock → verifyVRFProof → verifyMiningSig
 func TestVCTVRFFullPipeline(t *testing.T) {
 	// 1. Generate a secp256k1 key pair and derive the coinbase address.
 	seckey, _ := makeTestKeypair(t)
@@ -165,7 +243,7 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 	const blockNum = uint64(200)
 	parent := &types.Header{
 		Number:     big.NewInt(int64(blockNum - 1)),
-		Difficulty: big.NewInt(0x3ff),
+		Difficulty: big.NewInt(0x10000),
 		Time:       1700000000,
 	}
 	chain := &mockChainReader{
@@ -175,7 +253,7 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 
 	// 4. Generate VRF proof through the real IsEligibleForBlock path.
 	parentHash := parent.Hash()
-	_, proof, err := ecc.IsEligibleForBlock(chain, blockNum, parentHash)
+	_, proof, err := ecc.IsEligibleForBlock(chain, blockNum, parentHash, SortitionThresholdMax)
 	if err != nil {
 		t.Fatalf("IsEligibleForBlock: %v", err)
 	}
@@ -184,13 +262,14 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 	//    Raw deltaT = TimeoutEnd + VCTFutureTolerance → effectiveDeltaT = TimeoutEnd
 	//    → SortitionEligible returns true for any output.
 	header := &types.Header{
-		ParentHash: parentHash,
-		Coinbase:   coinbase,
-		Number:     big.NewInt(int64(blockNum)),
-		Difficulty: big.NewInt(0x3ff),
-		GasLimit:   30000000,
-		Time:       parent.Time + TimeoutEnd + VCTFutureTolerance,
-		VRFProof:   proof,
+		ParentHash:         parentHash,
+		Coinbase:           coinbase,
+		Number:             big.NewInt(int64(blockNum)),
+		Difficulty:         big.NewInt(0x10000),
+		GasLimit:           30000000,
+		Time:               parent.Time + TimeoutEnd + VCTFutureTolerance,
+		VRFProof:           proof,
+		SortitionThreshold: SortitionThresholdMax,
 	}
 	ecc.lock.Lock()
 	header.VRFPublicKey = make([]byte, len(ecc.vrfPubKey))

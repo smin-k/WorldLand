@@ -294,9 +294,13 @@ var (
 		WorldlandBlock:      big.NewInt(0),
 		SeoulBlock:          big.NewInt(0),
 		AnnapurnaBlock:      big.NewInt(2_520_000),
-		VCTBlock:            big.NewInt(10_000_000),
+		VCTBlock:            big.NewInt(10_000_000), // Rokis hard fork: inherit Seoul difficulty and start VCT with p=1.
 		HalvingEndTime:      big.NewInt(25228800),
 		Eccpow:              new(EccpowConfig),
+		Vct: &VctConfig{
+			MinEligibleBalance:        new(big.Int).Mul(big.NewInt(100), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)),
+			InitialSortitionThreshold: big.NewInt(256),
+		},
 	}
 
 	/* SeoulTrustedCheckpoint contains the light client trusted checkpoint for the Seoul network.
@@ -633,6 +637,10 @@ type VctConfig struct {
 	// MinEligibleBalance is S₀ (in wei): minimum parent-state balance required for a proposer.
 	// nil or zero means no restriction.
 	MinEligibleBalance *big.Int `json:"minEligibleBalance,omitempty"`
+	// InitialSortitionThreshold is the base VRF uint256 threshold used for the
+	// first VCT block. Values 1..256 are accepted as legacy byte-scale
+	// probabilities and converted by the VCT engine; nil or zero defaults to 2^256.
+	InitialSortitionThreshold *big.Int `json:"initialSortitionThreshold,omitempty"`
 	// S0ForkBlock is the block number where MinEligibleBalance changes to S0ForkBalance.
 	S0ForkBlock *big.Int `json:"s0ForkBlock,omitempty"`
 	// S0ForkBalance is the new S₀ value applied at and after S0ForkBlock.
@@ -698,6 +706,8 @@ func (c *ChainConfig) String() string {
 		} else {
 			banner += "Consensus: Beacon (proof-of-stake), merged from Clique (proof-of-authority)\n"
 		}
+	case c.Vct != nil:
+		banner += "Consensus: VCT (Rokis, WIP-6)\n"
 	case c.Eccpow != nil:
 		if c.TerminalTotalDifficulty == nil {
 			banner += "Consensus: Eccpow (proof-of-work)\n"

@@ -6,41 +6,41 @@ package vct
 import (
 	"errors"
 	"math"
+	"math/big"
 
 	secp256k1pkg "github.com/cryptoecc/WorldLand/crypto/secp256k1"
 )
 
 // Progressive timeout parameters (WIP-6).
-// These are consensus-critical constants — changing them requires a hard fork.
+// These are consensus-critical constants; changing them requires a hard fork.
 const (
-	// SortitionBase is the VRF first-byte threshold for immediate (base) eligibility:
-	// output[0] < SortitionBase → immediately eligible.
-	// Gives p_h^0 = 160/256 ≈ 62.5%.
-	SortitionBase uint8 = 0xA0
-
-	// TimeoutStart is the effective Δt (seconds) after which the sortition threshold
-	// begins expanding beyond p_h^0.  Defined in terms of effectiveDeltaT.
+	// TimeoutStart is the effective delta-t (seconds) after which the sortition
+	// threshold begins expanding beyond the base threshold.
 	TimeoutStart uint64 = 15
 
-	// TimeoutEnd is the effective Δt (seconds) at which p_h(Δt) = 1 (all eligible).
-	// Defined in terms of effectiveDeltaT; in raw header timestamps this corresponds
-	// to TimeoutEnd + VCTFutureTolerance seconds after the parent block.
+	// TimeoutEnd is the effective delta-t (seconds) at which all outputs are eligible.
 	TimeoutEnd uint64 = 60
 
-	// VCTFutureTolerance is the consensus-fixed future-timestamp allowance (seconds).
-	// It is subtracted from the raw Δt before computing the progressive timeout threshold
-	// so that advancing the block timestamp by up to VCTFutureTolerance seconds does not
-	// translate into free timeout eligibility.
-	// Must be kept in sync with allowedFutureBlockTimeSeconds in consensus.go.
+	// VCTFutureTolerance is subtracted from raw header timestamp deltas before
+	// computing progressive timeout eligibility.
 	VCTFutureTolerance uint64 = 15
 )
 
-var errInvalidVRFProofLen = errors.New("VRF proof must be 81 bytes")
+var (
+	errInvalidVRFProofLen = errors.New("VRF proof must be 81 bytes")
+
+	// SortitionDenominator is 2^256, the size of the VRF output space.
+	SortitionDenominator = new(big.Int).Lsh(big.NewInt(1), 256)
+	// SortitionBase is the target base threshold after bootstrap: p = 1/8.
+	SortitionBase = new(big.Int).Lsh(big.NewInt(1), 253)
+	// SortitionThresholdMax accepts every 32-byte VRF output.
+	SortitionThresholdMax = new(big.Int).Set(SortitionDenominator)
+)
 
 // EffectiveDeltaT converts a raw block-time delta (header.Time - parent.Time) to
-// the effective delta used for progressive timeout eligibility.  The future-timestamp
-// allowance (VCTFutureTolerance) is subtracted so that a miner advancing the block
-// timestamp by up to VCTFutureTolerance seconds gains no timeout credit.
+// the effective delta used for progressive timeout eligibility. The future-timestamp
+// allowance is subtracted so that advancing the block timestamp by up to
+// VCTFutureTolerance seconds gains no timeout credit.
 func EffectiveDeltaT(rawDeltaT uint64) uint64 {
 	if rawDeltaT > VCTFutureTolerance {
 		return rawDeltaT - VCTFutureTolerance
@@ -48,10 +48,8 @@ func EffectiveDeltaT(rawDeltaT uint64) uint64 {
 	return 0
 }
 
-// VRFProve generates an 81-byte secp256k1 VRF proof and the corresponding 32-byte output.
-// seckey: 32-byte secp256k1 private key
-// pubkey: 33-byte compressed secp256k1 public key
-// msg:    arbitrary-length message (e.g. "VCT_VRF|chainId|parentHash|blockNumber")
+// VRFProve generates an 81-byte secp256k1 VRF proof and the corresponding
+// 32-byte output.
 func VRFProve(seckey, pubkey, msg []byte) (proof []byte, output [32]byte, err error) {
 	var proofArr [81]byte
 	proofArr, output, err = secp256k1pkg.VRFProve(seckey, pubkey, msg)
@@ -74,8 +72,8 @@ func VRFVerify(pubkey, proof, msg []byte) ([32]byte, error) {
 	return secp256k1pkg.VRFVerify(pubkey, proofArr, msg)
 }
 
-// VRFOutputFromProof extracts the 32-byte VRF output from a proof without verifying it.
-// Only call after a successful VRFProve or VRFVerify.
+// VRFOutputFromProof extracts the 32-byte VRF output from a proof without
+// verifying it. Only call after a successful VRFProve or VRFVerify.
 func VRFOutputFromProof(proof []byte) ([32]byte, error) {
 	if len(proof) != 81 {
 		return [32]byte{}, errInvalidVRFProofLen
@@ -85,79 +83,142 @@ func VRFOutputFromProof(proof []byte) ([32]byte, error) {
 	return secp256k1pkg.VRFProofToHash(proofArr)
 }
 
-// CheckSortition returns true if the VRF proof passes the fixed base sortition threshold.
-// Used for pre-WIP-6 blocks and as the immediate-eligibility check during mining.
-// Threshold: output[0] < SortitionBase (≈ 62.5%).
+func cloneThreshold(x *big.Int) *big.Int {
+	if x == nil || x.Sign() <= 0 {
+		return new(big.Int).Set(SortitionBase)
+	}
+	if x.Cmp(SortitionThresholdMax) >= 0 {
+		return new(big.Int).Set(SortitionThresholdMax)
+	}
+	if x.Cmp(SortitionBase) < 0 {
+		return new(big.Int).Set(SortitionBase)
+	}
+	return new(big.Int).Set(x)
+}
+
+func thresholdProbability(threshold *big.Int) float64 {
+	t := cloneThreshold(threshold)
+	if t.Cmp(SortitionThresholdMax) >= 0 {
+		return 1
+	}
+	r := new(big.Rat).SetFrac(t, SortitionDenominator)
+	p, _ := r.Float64()
+	return p
+}
+
+func thresholdFromProbability(p float64) *big.Int {
+	if p >= 1 {
+		return new(big.Int).Set(SortitionThresholdMax)
+	}
+	if p <= 0 {
+		return new(big.Int)
+	}
+	f := new(big.Float).SetPrec(320).SetMode(big.ToZero).SetFloat64(p)
+	f.Mul(f, new(big.Float).SetPrec(320).SetInt(SortitionDenominator))
+	out, _ := f.Int(nil)
+	return out
+}
+
+// ConfigSortitionThreshold converts a config value into the consensus threshold.
+// Values 1..256 are treated as legacy byte-scale probabilities for convenience:
+// 32 => 12.5%, 128 => 50%, 256 => all eligible. Larger values are interpreted
+// as full uint256 thresholds.
+func ConfigSortitionThreshold(value *big.Int) *big.Int {
+	if value == nil || value.Sign() <= 0 {
+		return new(big.Int).Set(SortitionThresholdMax)
+	}
+	if value.Cmp(big.NewInt(256)) <= 0 {
+		if value.Cmp(big.NewInt(256)) == 0 {
+			return new(big.Int).Set(SortitionThresholdMax)
+		}
+		out := new(big.Int).Lsh(new(big.Int).Set(value), 248)
+		return cloneThreshold(out)
+	}
+	return cloneThreshold(value)
+}
+
+// SortitionThresholdAt returns the uint256 eligibility threshold for a given
+// effective elapsed block time deltaT.
+func SortitionThresholdAt(baseThreshold *big.Int, deltaT uint64) *big.Int {
+	base := cloneThreshold(baseThreshold)
+	if base.Cmp(SortitionThresholdMax) >= 0 {
+		return new(big.Int).Set(SortitionThresholdMax)
+	}
+	if deltaT < TimeoutStart {
+		return base
+	}
+	if deltaT >= TimeoutEnd {
+		return new(big.Int).Set(SortitionThresholdMax)
+	}
+	p0 := thresholdProbability(base)
+	ts := float64(TimeoutStart)
+	te := float64(TimeoutEnd)
+	tau := (te - ts) / math.Log(1.0/p0)
+	p := p0 * math.Exp(float64(deltaT-TimeoutStart)/tau)
+	threshold := thresholdFromProbability(p)
+	if threshold.Cmp(base) < 0 {
+		return base
+	}
+	return threshold
+}
+
+// CheckSortition returns true if the VRF proof passes the fixed base sortition
+// threshold. The 32-byte VRF output is interpreted as a big-endian uint256.
 func CheckSortition(proof []byte) bool {
 	output, err := VRFOutputFromProof(proof)
 	if err != nil {
 		return false
 	}
-	return output[0] < SortitionBase
+	return SortitionEligibleWithBase(output, SortitionBase, 0)
 }
 
-// sortitionThresholdByte returns the VRF first-byte eligibility threshold for a
-// given elapsed block time deltaT = blockTimestamp - parentTimestamp (seconds).
-// Returns 255 when deltaT ≥ TimeoutEnd (handled separately as always-eligible).
-func sortitionThresholdByte(deltaT uint64) uint8 {
-	if deltaT < TimeoutStart {
-		return SortitionBase
-	}
-	if deltaT >= TimeoutEnd {
-		return 255 // caller should use SortitionEligible which short-circuits for >= TimeoutEnd
-	}
-	// τ_h = (t_e - t_s) / ln(1 / p_h^0)
-	p0 := float64(SortitionBase) / 256.0
-	ts := float64(TimeoutStart)
-	te := float64(TimeoutEnd)
-	tau := (te - ts) / math.Log(1.0/p0)
-	p := p0 * math.Exp(float64(deltaT-TimeoutStart)/tau)
-	if p >= 1.0 {
-		return 255
-	}
-	threshold := uint8(p * 256.0)
-	if threshold < SortitionBase {
-		return SortitionBase
-	}
-	return threshold
-}
-
-// SortitionEligible returns true if the VRF output passes the time-dependent
-// sortition threshold p_h(deltaT).  Always true when deltaT ≥ TimeoutEnd.
 func SortitionEligible(output [32]byte, deltaT uint64) bool {
+	return SortitionEligibleWithBase(output, SortitionBase, deltaT)
+}
+
+// SortitionEligibleWithBase returns true if the VRF output passes the
+// time-dependent threshold derived from the block's base threshold.
+func SortitionEligibleWithBase(output [32]byte, baseThreshold *big.Int, deltaT uint64) bool {
 	if deltaT >= TimeoutEnd {
 		return true
 	}
-	threshold := sortitionThresholdByte(deltaT)
-	if threshold == 255 {
+	threshold := SortitionThresholdAt(baseThreshold, deltaT)
+	if threshold.Cmp(SortitionThresholdMax) >= 0 {
 		return true
 	}
-	return output[0] < threshold
+	return new(big.Int).SetBytes(output[:]).Cmp(threshold) < 0
 }
 
-// CheckSortitionWithTime returns true if the VRF proof passes the progressive
-// timeout sortition threshold for the given elapsed block time deltaT (seconds).
 func CheckSortitionWithTime(proof []byte, deltaT uint64) bool {
+	return CheckSortitionWithBaseAndTime(proof, SortitionBase, deltaT)
+}
+
+// CheckSortitionWithBaseAndTime is CheckSortitionWithTime parameterized by the
+// block's adaptive base threshold.
+func CheckSortitionWithBaseAndTime(proof []byte, baseThreshold *big.Int, deltaT uint64) bool {
 	output, err := VRFOutputFromProof(proof)
 	if err != nil {
 		return false
 	}
-	return SortitionEligible(output, deltaT)
+	return SortitionEligibleWithBase(output, baseThreshold, deltaT)
 }
 
-// SortitionSubmitDelay returns the minimum seconds after the parent block
-// timestamp at which a miner with the given VRF output first byte may submit a
-// block.  Returns 0 if the miner is immediately eligible (firstByte < SortitionBase).
-//
-// The delay is chosen so that at Δt = delay, p_h(Δt) strictly exceeds firstByte/256,
-// i.e. the verifier's CheckSortitionWithTime call will pass.
-func SortitionSubmitDelay(firstByte uint8) uint64 {
-	if firstByte < SortitionBase {
+func SortitionSubmitDelay(output [32]byte) uint64 {
+	return SortitionSubmitDelayWithBase(output, SortitionBase)
+}
+
+// SortitionSubmitDelayWithBase returns the minimum effective seconds needed
+// under the provided adaptive base threshold.
+func SortitionSubmitDelayWithBase(output [32]byte, baseThreshold *big.Int) uint64 {
+	base := cloneThreshold(baseThreshold)
+	if base.Cmp(SortitionThresholdMax) >= 0 || new(big.Int).SetBytes(output[:]).Cmp(base) < 0 {
 		return 0
 	}
-	// Use (firstByte+1)/256 so that threshold > firstByte/256 at submission time.
-	q := float64(int(firstByte)+1) / 256.0 // safe: int(255)+1 = 256
-	p0 := float64(SortitionBase) / 256.0
+	next := new(big.Int).SetBytes(output[:])
+	next.Add(next, big.NewInt(1))
+	qRat := new(big.Rat).SetFrac(next, SortitionDenominator)
+	q, _ := qRat.Float64()
+	p0 := thresholdProbability(base)
 	ts := float64(TimeoutStart)
 	te := float64(TimeoutEnd)
 	tau := (te - ts) / math.Log(1.0/p0)
@@ -165,5 +226,12 @@ func SortitionSubmitDelay(firstByte uint8) uint64 {
 	if delay >= te {
 		return TimeoutEnd
 	}
-	return uint64(math.Ceil(delay))
+	out := uint64(math.Ceil(delay))
+	if out < TimeoutStart {
+		out = TimeoutStart
+	}
+	for out < TimeoutEnd && !SortitionEligibleWithBase(output, base, out) {
+		out++
+	}
+	return out
 }

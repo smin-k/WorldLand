@@ -40,7 +40,10 @@ var (
 
 	// BlockGenerationTime for Seoul
 	BlockGenerationTimeSeoul = big.NewInt(10) // 36) // 10 ) // 36)
-	SeoulDifficulty   = big.NewInt(1023)
+	SeoulDifficulty = big.NewInt(1023)
+	// RokisDifficulty is the VCT-only floor. With Annapurna sensitivity 1024,
+	// a 1023 floor gives parentDifficulty/1024 == 0, so difficulty cannot move.
+	RokisDifficulty = big.NewInt(65536)
 
 	//initLevel int = 10
 	minLevel  int = 10

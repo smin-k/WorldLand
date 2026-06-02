@@ -1361,9 +1361,8 @@ func (bc *BlockChain) WriteBlockAndSetHead(block *types.Block, receipts []*types
 	defer bc.chainmu.Unlock()
 
 	// WIP-6: S₀ balance-gated proposer eligibility check for miner-produced blocks.
-	// If the parent state is unavailable (e.g. during snap sync), the check is skipped:
-	// ECCPoW validity and VRF proof are still enforced; S₀ is only enforced when state
-	// is present. An attacker cannot bypass ECCPoW to exploit this skip.
+	// S₀ is a consensus rule, so parent-state unavailability is a validation error,
+	// not a reason to silently skip the proposer eligibility check.
 	if pv, ok := bc.engine.(consensus.ProposerVerifier); ok && block.NumberU64() > 0 {
 		parentHeader := bc.GetHeader(block.ParentHash(), block.NumberU64()-1)
 		if parentHeader == nil {
@@ -1371,8 +1370,9 @@ func (bc *BlockChain) WriteBlockAndSetHead(block *types.Block, receipts []*types
 		}
 		parentState, err := bc.StateAt(parentHeader.Root)
 		if err != nil {
-			log.Debug("WIP-6 S₀ check skipped: parent state unavailable", "block", block.NumberU64(), "err", err)
-		} else if err := pv.VerifyProposerEligibility(bc, block.Header(), parentHeader, parentState); err != nil {
+			return NonStatTy, fmt.Errorf("WIP-6 S₀ check failed: parent state unavailable for block %d: %w", block.NumberU64(), err)
+		}
+		if err := pv.VerifyProposerEligibility(bc, block.Header(), parentHeader, parentState); err != nil {
 			return NonStatTy, err
 		}
 	}

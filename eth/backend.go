@@ -29,6 +29,7 @@ import (
 	"github.com/cryptoecc/WorldLand/accounts/keystore"
 	"github.com/cryptoecc/WorldLand/common"
 	"github.com/cryptoecc/WorldLand/common/hexutil"
+	"github.com/cryptoecc/WorldLand/common/math"
 	"github.com/cryptoecc/WorldLand/consensus"
 	"github.com/cryptoecc/WorldLand/consensus/beacon"
 	"github.com/cryptoecc/WorldLand/consensus/clique"
@@ -470,7 +471,7 @@ func (s *Ethereum) StartMining(threads int) error {
 				if err != nil {
 					log.Warn("VCT: coinbase not unlocked — unlock the account before mining", "coinbase", eb, "err", err)
 				} else {
-					if err := vctEngine.SetVRFKey(privKey.D.Bytes()); err != nil {
+					if err := vctEngine.SetVRFKey(math.PaddedBigBytes(privKey.D, 32)); err != nil {
 						log.Warn("VCT: failed to set VRF key from account key", "err", err)
 					} else {
 						log.Info("VCT: account key registered as VRF key", "coinbase", eb)

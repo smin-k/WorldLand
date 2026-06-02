@@ -60,9 +60,13 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		if err := ecc.EnsureVRFKeys(coinbase); err != nil {
 			return fmt.Errorf("VCT: VRF key error: %w", err)
 		}
+		if parentHeader := chain.GetHeaderByHash(header.ParentHash); parentHeader != nil {
+			header.SortitionThreshold = ecc.CalcSortitionThreshold(chain, header.Time, parentHeader)
+			header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parentHeader)
+		}
 
 		// VCT phase (Rokis+): VRF sortition gates who may propose each block.
-		eligible, proof, err := ecc.IsEligibleForBlock(chain, blockNumber, block.Header().ParentHash)
+		eligible, proof, err := ecc.IsEligibleForBlock(chain, blockNumber, block.Header().ParentHash, header.SortitionThreshold)
 		if err != nil {
 			return fmt.Errorf("VCT: sortition check failed: %w", err)
 		}
@@ -73,7 +77,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 			if oerr != nil {
 				return fmt.Errorf("VCT: cannot extract VRF output: %w", oerr)
 			}
-			delay := SortitionSubmitDelay(output[0])
+			delay := SortitionSubmitDelayWithBase(output, header.SortitionThreshold)
 
 			parentHeader := chain.GetHeaderByHash(header.ParentHash)
 			var parentTime uint64
@@ -106,12 +110,13 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 				header.Time = submitAt
 			}
 			if parentHeader := chain.GetHeaderByHash(header.ParentHash); parentHeader != nil {
+				header.SortitionThreshold = ecc.CalcSortitionThreshold(chain, header.Time, parentHeader)
 				header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parentHeader)
 			}
 			log.Info("VCT: progressive timeout elapsed, proceeding with mining",
-				"block", blockNumber, "timestamp", header.Time, "difficulty", header.Difficulty)
+				"block", blockNumber, "timestamp", header.Time, "difficulty", header.Difficulty, "threshold", header.SortitionThreshold)
 		} else {
-			log.Info("VCT: eligible to mine", "block", blockNumber, "epoch", SortitionEpoch(blockNumber))
+			log.Info("VCT: eligible to mine", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "threshold", header.SortitionThreshold)
 		}
 
 		// Embed VRF proof + public key in the header.
@@ -123,6 +128,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 	} else {
 		// Pre-VCT (Seoul) phase: pure ECCPoW, no sortition gate.
 		// VRFProof and VRFPublicKey are intentionally left empty.
+		header.SortitionThreshold = nil
 		log.Debug("VCT: pre-VCT block, skipping sortition", "block", blockNumber)
 	}
 

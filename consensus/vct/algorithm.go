@@ -89,18 +89,6 @@ func computeMiningSigMsgVCT(sealHash []byte, nonce uint64) []byte {
 	return crypto.Keccak256(msg)
 }
 
-// computePowSeed returns Keccak256(VCT_ECCPOW || chainId || sealHash || nonce_LE8 || sigma).
-// This is the pre-WIP-6 32-byte seed for Keccak512 → LDPC hash vector generation.
-func computePowSeed(chainIDBytes, sealHash []byte, nonce uint64, sigma []byte) []byte {
-	raw := make([]byte, 10+32+32+8+len(sigma))
-	copy(raw[:10], "VCT_ECCPOW")
-	copy(raw[10:42], chainIDBytes)
-	copy(raw[42:74], sealHash)
-	binary.LittleEndian.PutUint64(raw[74:82], nonce)
-	copy(raw[82:], sigma)
-	return crypto.Keccak256(raw)
-}
-
 // computePowSeedVCT returns Keccak256(VCT_ECCPOW || sealHash || nonce_LE8 || sigma).
 // WIP-6 formula: chainId removed since it is already committed in sealHash.
 func computePowSeedVCT(sealHash []byte, nonce uint64, sigma []byte) []byte {
@@ -331,7 +319,7 @@ func (ecc *ECC) GetSortitionSeedHash(chain consensus.ChainHeaderReader, blockNum
 // IsEligibleForBlock checks VRF sortition eligibility for blockNumber.
 // parentHash is the ParentHash of the block being mined.
 // Returns (eligible, proofBytes, error).
-func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumber uint64, parentHash common.Hash) (bool, []byte, error) {
+func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumber uint64, parentHash common.Hash, threshold *big.Int) (bool, []byte, error) {
 	ecc.lock.Lock()
 	defer ecc.lock.Unlock()
 
@@ -360,8 +348,12 @@ func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumbe
 		return false, nil, fmt.Errorf("VCT: VRF prove failed: %w", err)
 	}
 
-	eligible := CheckSortition(proof)
-	log.Info("VCT sortition", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "eligible", eligible)
+	output, err := VRFOutputFromProof(proof)
+	if err != nil {
+		return false, nil, fmt.Errorf("VCT: VRF output extraction failed: %w", err)
+	}
+	eligible := SortitionEligibleWithBase(output, threshold, 0)
+	log.Info("VCT sortition", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "threshold", threshold, "eligible", eligible)
 	return eligible, proof, nil
 }
 
@@ -427,8 +419,11 @@ func (ecc *ECC) SetVRFKey(seckey []byte) error {
 	return nil
 }
 
-// ── LDPC mining helpers ───────────────────────────────────────────────────────
+// ── Legacy LDPC mining helpers ────────────────────────────────────────────────
 
+// Deprecated: this helper uses the legacy sealHash||nonce seed path and is not
+// part of the WIP-6 VCT mining pipeline. New VCT code must use mine/mine_seoul,
+// which bind each ECCPoW trial to computePowSeedVCT and the per-nonce signature.
 func RunOptimizedConcurrencyLDPC(header *types.Header, hash []byte) (bool, []int, []int, uint64, []byte) {
 	var (
 		LDPCNonce  uint64
@@ -458,6 +453,9 @@ func RunOptimizedConcurrencyLDPC(header *types.Header, hash []byte) (bool, []int
 	return flag, hashVector, outputWord, LDPCNonce, digest
 }
 
+// Deprecated: this helper uses the legacy Seoul sealHash||nonce seed path and is
+// not part of the WIP-6 VCT mining pipeline. New VCT code must use mine_seoul,
+// which selects the correct seed path from the fork phase.
 func RunOptimizedConcurrencyLDPC_Seoul(header *types.Header, hash []byte) (bool, []int, []int, uint64, []byte) {
 	var (
 		LDPCNonce  uint64

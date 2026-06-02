@@ -212,6 +212,15 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 	if expectDiff.Cmp(header.Difficulty) != 0 {
 		return fmt.Errorf("invalid vct difficulty: have %v, want %v", header.Difficulty, expectDiff)
 	}
+	isVCT := chain.Config().IsVCT(header.Number)
+	if isVCT {
+		expectThreshold := ecc.CalcSortitionThreshold(chain, header.Time, parent)
+		if header.SortitionThreshold == nil || header.SortitionThreshold.Cmp(expectThreshold) != 0 {
+			return fmt.Errorf("invalid vct sortition threshold: have %v, want %v", header.SortitionThreshold, expectThreshold)
+		}
+	} else if header.SortitionThreshold != nil {
+		return fmt.Errorf("invalid pre-VCT sortition threshold: have %v, want nil", header.SortitionThreshold)
+	}
 	if header.GasLimit > params.MaxGasLimit {
 		return fmt.Errorf("invalid gasLimit: have %v, max %v", header.GasLimit, params.MaxGasLimit)
 	}
@@ -232,7 +241,6 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 		return consensus.ErrInvalidNumber
 	}
 	if seal {
-		isVCT := chain.Config().IsVCT(header.Number)
 		if err := ecc.verifySeal(chain, header); err != nil {
 			return err
 		}
@@ -262,6 +270,9 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 		// Seoul phase: pure ECCPoW, no sortition proof required.
 		return nil
 	}
+	if header.SortitionThreshold == nil || header.SortitionThreshold.Sign() <= 0 || header.SortitionThreshold.Cmp(SortitionThresholdMax) > 0 {
+		return fmt.Errorf("VCT: invalid sortition threshold %v", header.SortitionThreshold)
+	}
 	if len(header.VRFProof) == 0 {
 		return errors.New("VCT: VRF proof missing")
 	}
@@ -271,35 +282,25 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 
 	blockNumber := header.Number.Uint64()
 
-	var msg []byte
 	var deltaT uint64 // elapsed seconds since parent; used for progressive timeout (WIP-6 only)
-	if chain.Config().IsVCT(header.Number) {
-		// WIP-6: verify Address(VRFPublicKey) == Coinbase
-		pub, err := crypto.DecompressPubkey(header.VRFPublicKey)
-		if err != nil {
-			return fmt.Errorf("VCT: failed to decompress VRF public key: %w", err)
-		}
-		vrfAddr := crypto.PubkeyToAddress(*pub)
-		if vrfAddr != header.Coinbase {
-			return fmt.Errorf("VCT: VRF public key address %v != coinbase %v", vrfAddr, header.Coinbase)
-		}
-		// WIP-6: VRF message = VCT_VRF || chainId || phash_{h-1} || h
-		chainIDBytes := ecc.chainIDBytes()
-		msg = computeVRFMsg(chainIDBytes, header.ParentHash.Bytes(), blockNumber)
+	// WIP-6: verify Address(VRFPublicKey) == Coinbase.
+	pub, err := crypto.DecompressPubkey(header.VRFPublicKey)
+	if err != nil {
+		return fmt.Errorf("VCT: failed to decompress VRF public key: %w", err)
+	}
+	vrfAddr := crypto.PubkeyToAddress(*pub)
+	if vrfAddr != header.Coinbase {
+		return fmt.Errorf("VCT: VRF public key address %v != coinbase %v", vrfAddr, header.Coinbase)
+	}
+	// WIP-6: VRF message = VCT_VRF || chainId || phash_{h-1} || h.
+	chainIDBytes := ecc.chainIDBytes()
+	msg := computeVRFMsg(chainIDBytes, header.ParentHash.Bytes(), blockNumber)
 
-		// Compute effective Δt for progressive timeout sortition.
-		// EffectiveDeltaT subtracts VCTFutureTolerance so that advancing the block
-		// timestamp by up to that amount yields no free timeout eligibility.
-		if header.Time > parent.Time {
-			deltaT = EffectiveDeltaT(header.Time - parent.Time)
-		}
-	} else {
-		seedHash := ecc.GetSortitionSeedHash(chain, blockNumber)
-		if seedHash == (common.Hash{}) {
-			log.Warn("VCT: VRF verification failed - seed block unavailable", "block", blockNumber)
-			return errors.New("VCT: sortition seed block unavailable")
-		}
-		msg = seedHash.Bytes()
+	// Compute effective Δt for progressive timeout sortition.
+	// EffectiveDeltaT subtracts VCTFutureTolerance so that advancing the block
+	// timestamp by up to that amount yields no free timeout eligibility.
+	if header.Time > parent.Time {
+		deltaT = EffectiveDeltaT(header.Time - parent.Time)
 	}
 
 	if _, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg); err != nil {
@@ -307,15 +308,8 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 	}
 
 	// WIP-6: time-dependent threshold (progressive timeout liveness guarantee).
-	// Pre-VCT: fixed threshold.
-	if chain.Config().IsVCT(header.Number) {
-		if !CheckSortitionWithTime(header.VRFProof, deltaT) {
-			return fmt.Errorf("VCT: VRF proof does not pass sortition threshold (Δt=%d s)", deltaT)
-		}
-	} else {
-		if !CheckSortition(header.VRFProof) {
-			return errors.New("VCT: VRF proof does not pass sortition threshold")
-		}
+	if !CheckSortitionWithBaseAndTime(header.VRFProof, header.SortitionThreshold, deltaT) {
+		return fmt.Errorf("VCT: VRF proof does not pass sortition threshold (Δt=%d s)", deltaT)
 	}
 
 	log.Debug("VCT: VRF proof verified", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "deltaT", deltaT)
@@ -324,7 +318,32 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 
 func (ecc *ECC) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	next := new(big.Int).Add(parent.Number, big1)
+	if chain.Config().IsVCT(next) {
+		rawDiff := ecc.calcBaseDifficulty(chain, time, parent)
+		threshold := ecc.CalcSortitionThreshold(chain, time, parent)
+		if threshold.Cmp(SortitionBase) > 0 {
+			if parent.Difficulty.Cmp(RokisDifficulty) < 0 {
+				return new(big.Int).Set(RokisDifficulty)
+			}
+			// During bootstrap, spend difficulty-increase pressure on lowering
+			// the sortition threshold first. If the threshold is already maxed
+			// out and blocks are still slow, probability cannot be raised further,
+			// so difficulty must be allowed to decrease for liveness.
+			if threshold.Cmp(SortitionThresholdMax) >= 0 && rawDiff.Cmp(parent.Difficulty) < 0 {
+				return rawDiff
+			}
+			return new(big.Int).Set(parent.Difficulty)
+		}
+		return rawDiff
+	}
+	return ecc.calcBaseDifficulty(chain, time, parent)
+}
+
+func (ecc *ECC) calcBaseDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
+	next := new(big.Int).Add(parent.Number, big1)
 	switch {
+	case chain.Config().IsVCT(next):
+		return calcDifficultyRokis(chain, time, parent)
 	case chain.Config().IsAnnapurna(next):
 		return calcDifficultyAnnapurna(chain, time, parent)
 	case chain.Config().IsSeoul(next):
@@ -332,6 +351,60 @@ func (ecc *ECC) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, p
 	default:
 		return calcDifficultyFrontier(time, parent)
 	}
+}
+
+// CalcSortitionThreshold returns the adaptive VCT base sortition threshold for
+// the child block of parent at the given timestamp. During bootstrap it starts
+// at 256 (all VRF outputs immediately eligible) and spends the difficulty
+// adjustment signal on lowering the threshold down to SortitionBase before
+// allowing ECCPoW difficulty to move again.
+func (ecc *ECC) CalcSortitionThreshold(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
+	next := new(big.Int).Add(parent.Number, big1)
+	if !chain.Config().IsVCT(next) {
+		return nil
+	}
+	if !chain.Config().IsVCT(parent.Number) {
+		if cfg := chain.Config().Vct; cfg != nil && cfg.InitialSortitionThreshold != nil && cfg.InitialSortitionThreshold.Sign() > 0 {
+			return ConfigSortitionThreshold(cfg.InitialSortitionThreshold)
+		}
+		return new(big.Int).Set(SortitionThresholdMax)
+	}
+	parentThreshold := cloneThreshold(parent.SortitionThreshold)
+
+	threshold := new(big.Int).Set(parentThreshold)
+	if parentThreshold.Cmp(SortitionBase) > 0 {
+		rawDiff := ecc.calcBaseDifficulty(chain, time, parent)
+		if rawDiff.Sign() > 0 && parent.Difficulty.Sign() > 0 {
+			num := new(big.Int).Mul(new(big.Int).Set(parentThreshold), parent.Difficulty)
+			num.Add(num, new(big.Int).Sub(rawDiff, big1)) // ceil(num/rawDiff)
+			num.Div(num, rawDiff)
+			threshold = num
+		}
+	}
+
+	// If the parent itself required the full timeout window, relax the next
+	// block's base threshold. This is a conservative liveness response; the
+	// normal bootstrap rule will lower it again when blocks arrive quickly.
+	if chain.Config().IsVCT(parent.Number) && parent.Number.Sign() > 0 {
+		grandParent := chain.GetHeader(parent.ParentHash, parent.Number.Uint64()-1)
+		if grandParent != nil && parent.Time > grandParent.Time && EffectiveDeltaT(parent.Time-grandParent.Time) >= TimeoutEnd {
+			boosted := new(big.Int).Mul(parentThreshold, big2)
+			if boosted.Cmp(SortitionThresholdMax) > 0 {
+				boosted = new(big.Int).Set(SortitionThresholdMax)
+			}
+			if threshold.Cmp(boosted) < 0 {
+				threshold = boosted
+			}
+		}
+	}
+
+	if threshold.Cmp(SortitionThresholdMax) > 0 {
+		threshold = new(big.Int).Set(SortitionThresholdMax)
+	}
+	if threshold.Cmp(SortitionBase) < 0 {
+		threshold = new(big.Int).Set(SortitionBase)
+	}
+	return threshold
 }
 
 var (
@@ -357,6 +430,14 @@ func calcDifficultySeoul(chain consensus.ChainHeaderReader, time uint64, parent 
 
 func calcDifficultyAnnapurna(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	return MakeLDPCDifficultyCalculatorAnnapurna()(time, parent)
+}
+
+func calcDifficultyRokis(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
+	diff := calcDifficultyAnnapurna(chain, time, parent)
+	if diff.Cmp(RokisDifficulty) < 0 {
+		return new(big.Int).Set(RokisDifficulty)
+	}
+	return diff
 }
 
 var FrontierDifficultyCalculator = calcDifficultyFrontier
@@ -426,6 +507,11 @@ func (ecc *ECC) Prepare(chain consensus.ChainHeaderReader, header *types.Header)
 	if parent == nil {
 		return consensus.ErrUnknownAncestor
 	}
+	if chain.Config().IsVCT(header.Number) {
+		header.SortitionThreshold = ecc.CalcSortitionThreshold(chain, header.Time, parent)
+	} else {
+		header.SortitionThreshold = nil
+	}
 	header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parent)
 	if chain.Config().ChainID != nil {
 		ecc.lock.Lock()
@@ -456,14 +542,17 @@ func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 	hasher.Write(ecc.chainIDBytes())
 	// Block template fields only. Excluded (all set during Seal/mining):
 	//   Nonce, MixDigest, Codeword — PoW outputs
-	//   VRFPublicKey, VRFProof     — filled in by Seal() before mining starts
 	//   VRFSignature               — per-nonce mining signature
 	//   CodeLength                 — derived from difficulty by mine_seoul and written back
+	// VRFPublicKey, VRFProof, and SortitionThreshold are included because they
+	// select and prove the VRF eligibility gate.
 	enc := []interface{}{
 		header.ParentHash, header.UncleHash, header.Coinbase,
 		header.Root, header.TxHash, header.ReceiptHash,
 		header.Bloom, header.Difficulty, header.Number,
 		header.GasLimit, header.GasUsed, header.Time, header.Extra,
+		header.VRFPublicKey, header.VRFProof,
+		header.SortitionThreshold,
 	}
 	if header.BaseFee != nil {
 		enc = append(enc, header.BaseFee)

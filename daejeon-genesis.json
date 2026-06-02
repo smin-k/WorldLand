@@ -17,9 +17,10 @@
     "HalvingEndTime": 25228800,
     "seoulBlock": 0,
     "AnnapurnaBlock": 0,
-    "vctBlock": 100,
+    "vctBlock": 10,
     "vct": {
-      "minEligibleBalance": 100000000000000000000
+      "minEligibleBalance": 100000000000000000000,
+      "initialSortitionThreshold": 128
     }
   },
   "nonce": "0x289f",

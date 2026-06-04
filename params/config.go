@@ -294,7 +294,7 @@ var (
 		WorldlandBlock:      big.NewInt(0),
 		SeoulBlock:          big.NewInt(0),
 		AnnapurnaBlock:      big.NewInt(2_520_000),
-		VCTBlock:            big.NewInt(10_000_000), // Rokis hard fork: inherit Seoul difficulty and start VCT with p=1.
+		VCTBlock:            big.NewInt(10_000_000), // Rokis hard fork: inherit Seoul difficulty and start VCT bootstrap.
 		HalvingEndTime:      big.NewInt(25228800),
 		Eccpow:              new(EccpowConfig),
 		Vct: &VctConfig{
@@ -346,7 +346,7 @@ var (
 		Eccpow:              new(EccpowConfig),
 	}
 
-	// DaejeonChainConfig is the VCT testnet — ECCPoW (Seoul) until block 100, then Rokis (VCT) hard fork.
+	// DaejeonChainConfig is the VCT testnet -- ECCPoW (Seoul) until block 100, then Rokis (VCT) hard fork.
 	DaejeonChainConfig = &ChainConfig{
 		ChainID:             big.NewInt(10399),
 		HomesteadBlock:      big.NewInt(0),
@@ -507,7 +507,10 @@ var (
 		AnnapurnaBlock:      big.NewInt(0),
 		Ethash:              new(EthashConfig),
 	}
-	//NonActivatedConfig = &ChainConfig{big.NewInt(1), nil, nil, false, nil, common.Hash{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, new(EthashConfig), nil, nil}
+	NonActivatedConfig = &ChainConfig{
+		ChainID: big.NewInt(1),
+		Ethash:  new(EthashConfig),
+	}
 	TestRules = TestChainConfig.Rules(new(big.Int), false)
 )
 
@@ -634,7 +637,7 @@ type EccpowConfig struct{}
 
 // VctConfig is the consensus engine config for the VCT (WIP-6) network.
 type VctConfig struct {
-	// MinEligibleBalance is S₀ (in wei): minimum parent-state balance required for a proposer.
+	// MinEligibleBalance is S0 (in wei): minimum parent-state balance required for a proposer.
 	// nil or zero means no restriction.
 	MinEligibleBalance *big.Int `json:"minEligibleBalance,omitempty"`
 	// InitialSortitionThreshold is the base VRF uint256 threshold used for the
@@ -643,11 +646,11 @@ type VctConfig struct {
 	InitialSortitionThreshold *big.Int `json:"initialSortitionThreshold,omitempty"`
 	// S0ForkBlock is the block number where MinEligibleBalance changes to S0ForkBalance.
 	S0ForkBlock *big.Int `json:"s0ForkBlock,omitempty"`
-	// S0ForkBalance is the new S₀ value applied at and after S0ForkBlock.
+	// S0ForkBalance is the new S0 value applied at and after S0ForkBlock.
 	S0ForkBalance *big.Int `json:"s0ForkBalance,omitempty"`
 }
 
-// MinEligibleBalanceAt returns the S₀ value applicable at the given block number.
+// MinEligibleBalanceAt returns the S0 value applicable at the given block number.
 func (c *VctConfig) MinEligibleBalanceAt(blockNum *big.Int) *big.Int {
 	if c == nil || c.MinEligibleBalance == nil {
 		return new(big.Int)

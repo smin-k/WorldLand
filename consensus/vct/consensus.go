@@ -42,8 +42,9 @@ var (
 	SumRewardUntilMaturity = big.NewInt(47304000)
 	MaxHalving             = int64(4)
 
-	maxUncles                     = 2
-	allowedFutureBlockTimeSeconds = int64(15)
+	maxUncles                        = 2
+	allowedFutureBlockTimeSeconds    = int64(15)
+	allowedFutureBlockTimeSecondsVCT = int64(5)
 )
 
 var (
@@ -200,8 +201,13 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 	if uint64(len(header.Extra)) > params.MaximumExtraDataSize {
 		return fmt.Errorf("extra-data too long: %d > %d", len(header.Extra), params.MaximumExtraDataSize)
 	}
+	isVCT := chain.Config().IsVCT(header.Number)
 	if !uncle {
-		if header.Time > uint64(unixNow+allowedFutureBlockTimeSeconds) {
+		futureAllowance := allowedFutureBlockTimeSeconds
+		if isVCT {
+			futureAllowance = allowedFutureBlockTimeSecondsVCT
+		}
+		if header.Time > uint64(unixNow+futureAllowance) {
 			return consensus.ErrFutureBlock
 		}
 	}
@@ -212,7 +218,6 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 	if expectDiff.Cmp(header.Difficulty) != 0 {
 		return fmt.Errorf("invalid vct difficulty: have %v, want %v", header.Difficulty, expectDiff)
 	}
-	isVCT := chain.Config().IsVCT(header.Number)
 	if isVCT {
 		expectThreshold := ecc.CalcSortitionThreshold(chain, header.Time, parent)
 		if header.SortitionThreshold == nil || header.SortitionThreshold.Cmp(expectThreshold) != 0 {
@@ -296,11 +301,9 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 	chainIDBytes := ecc.chainIDBytes()
 	msg := computeVRFMsg(chainIDBytes, header.ParentHash.Bytes(), blockNumber)
 
-	// Compute effective Δt for progressive timeout sortition.
-	// EffectiveDeltaT subtracts VCTFutureTolerance so that advancing the block
-	// timestamp by up to that amount yields no free timeout eligibility.
+	// Compute elapsed header time for progressive timeout sortition.
 	if header.Time > parent.Time {
-		deltaT = EffectiveDeltaT(header.Time - parent.Time)
+		deltaT = header.Time - parent.Time
 	}
 
 	if _, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg); err != nil {
@@ -387,7 +390,7 @@ func (ecc *ECC) CalcSortitionThreshold(chain consensus.ChainHeaderReader, time u
 	// normal bootstrap rule will lower it again when blocks arrive quickly.
 	if chain.Config().IsVCT(parent.Number) && parent.Number.Sign() > 0 {
 		grandParent := chain.GetHeader(parent.ParentHash, parent.Number.Uint64()-1)
-		if grandParent != nil && parent.Time > grandParent.Time && EffectiveDeltaT(parent.Time-grandParent.Time) >= TimeoutEnd {
+		if grandParent != nil && parent.Time > grandParent.Time && parent.Time-grandParent.Time >= TimeoutEnd {
 			boosted := new(big.Int).Mul(parentThreshold, big2)
 			if boosted.Cmp(SortitionThresholdMax) > 0 {
 				boosted = new(big.Int).Set(SortitionThresholdMax)

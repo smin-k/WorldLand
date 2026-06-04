@@ -285,6 +285,9 @@ func CopyHeader(h *Header) *Header {
 		cpy.Codeword = make([]byte, len(h.Codeword))
 		copy(cpy.Codeword, h.Codeword)
 	}
+	if h.SortitionThreshold != nil {
+		cpy.SortitionThreshold = new(big.Int).Set(h.SortitionThreshold)
+	}
 	return &cpy
 }
 

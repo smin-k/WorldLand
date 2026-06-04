@@ -14,16 +14,12 @@ import (
 // Progressive timeout parameters (WIP-6).
 // These are consensus-critical constants; changing them requires a hard fork.
 const (
-	// TimeoutStart is the effective delta-t (seconds) after which the sortition
+	// TimeoutStart is the elapsed delta-t (seconds) after which the sortition
 	// threshold begins expanding beyond the base threshold.
 	TimeoutStart uint64 = 15
 
-	// TimeoutEnd is the effective delta-t (seconds) at which all outputs are eligible.
+	// TimeoutEnd is the elapsed delta-t (seconds) at which all outputs are eligible.
 	TimeoutEnd uint64 = 60
-
-	// VCTFutureTolerance is subtracted from raw header timestamp deltas before
-	// computing progressive timeout eligibility.
-	VCTFutureTolerance uint64 = 15
 )
 
 var (
@@ -36,17 +32,6 @@ var (
 	// SortitionThresholdMax accepts every 32-byte VRF output.
 	SortitionThresholdMax = new(big.Int).Set(SortitionDenominator)
 )
-
-// EffectiveDeltaT converts a raw block-time delta (header.Time - parent.Time) to
-// the effective delta used for progressive timeout eligibility. The future-timestamp
-// allowance is subtracted so that advancing the block timestamp by up to
-// VCTFutureTolerance seconds gains no timeout credit.
-func EffectiveDeltaT(rawDeltaT uint64) uint64 {
-	if rawDeltaT > VCTFutureTolerance {
-		return rawDeltaT - VCTFutureTolerance
-	}
-	return 0
-}
 
 // VRFProve generates an 81-byte secp256k1 VRF proof and the corresponding
 // 32-byte output.
@@ -138,7 +123,7 @@ func ConfigSortitionThreshold(value *big.Int) *big.Int {
 }
 
 // SortitionThresholdAt returns the uint256 eligibility threshold for a given
-// effective elapsed block time deltaT.
+// elapsed block time deltaT.
 func SortitionThresholdAt(baseThreshold *big.Int, deltaT uint64) *big.Int {
 	base := cloneThreshold(baseThreshold)
 	if base.Cmp(SortitionThresholdMax) >= 0 {
@@ -207,7 +192,7 @@ func SortitionSubmitDelay(output [32]byte) uint64 {
 	return SortitionSubmitDelayWithBase(output, SortitionBase)
 }
 
-// SortitionSubmitDelayWithBase returns the minimum effective seconds needed
+// SortitionSubmitDelayWithBase returns the minimum elapsed seconds needed
 // under the provided adaptive base threshold.
 func SortitionSubmitDelayWithBase(output [32]byte, baseThreshold *big.Int) uint64 {
 	base := cloneThreshold(baseThreshold)

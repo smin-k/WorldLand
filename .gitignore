@@ -51,6 +51,8 @@ beta-data/
 
 # Local WIP-6 / testnet experiment artifacts
 /compat-test/
+/rokis-private-results/
+/scripts/
 /node*.log
 /daejeon-node*.log
 /worldland*.exe*

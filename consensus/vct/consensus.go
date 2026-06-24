@@ -44,7 +44,7 @@ var (
 
 	maxUncles                        = 2
 	allowedFutureBlockTimeSeconds    = int64(15)
-	allowedFutureBlockTimeSecondsVCT = int64(5)
+	allowedFutureBlockTimeSecondsVCT = int64(VCTFutureTolerance)
 )
 
 var (
@@ -287,7 +287,7 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 
 	blockNumber := header.Number.Uint64()
 
-	var deltaT uint64 // elapsed seconds since parent; used for progressive timeout (WIP-6 only)
+	var rawDeltaT uint64 // elapsed header seconds since parent
 	// WIP-6: verify Address(VRFPublicKey) == Coinbase.
 	pub, err := crypto.DecompressPubkey(header.VRFPublicKey)
 	if err != nil {
@@ -303,8 +303,9 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 
 	// Compute elapsed header time for progressive timeout sortition.
 	if header.Time > parent.Time {
-		deltaT = header.Time - parent.Time
+		rawDeltaT = header.Time - parent.Time
 	}
+	deltaT := EffectiveDeltaT(rawDeltaT)
 
 	if _, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg); err != nil {
 		return fmt.Errorf("VCT: VRF proof invalid: %w", err)
@@ -312,10 +313,10 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 
 	// WIP-6: time-dependent threshold (progressive timeout liveness guarantee).
 	if !CheckSortitionWithBaseAndTime(header.VRFProof, header.SortitionThreshold, deltaT) {
-		return fmt.Errorf("VCT: VRF proof does not pass sortition threshold (Δt=%d s)", deltaT)
+		return fmt.Errorf("VCT: VRF proof does not pass sortition threshold (raw Δt=%d s, effective Δt=%d s)", rawDeltaT, deltaT)
 	}
 
-	log.Debug("VCT: VRF proof verified", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "deltaT", deltaT)
+	log.Debug("VCT: VRF proof verified", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "rawDeltaT", rawDeltaT, "effectiveDeltaT", deltaT)
 	return nil
 }
 
@@ -390,7 +391,7 @@ func (ecc *ECC) CalcSortitionThreshold(chain consensus.ChainHeaderReader, time u
 	// normal bootstrap rule will lower it again when blocks arrive quickly.
 	if chain.Config().IsVCT(parent.Number) && parent.Number.Sign() > 0 {
 		grandParent := chain.GetHeader(parent.ParentHash, parent.Number.Uint64()-1)
-		if grandParent != nil && parent.Time > grandParent.Time && parent.Time-grandParent.Time >= TimeoutEnd {
+		if grandParent != nil && parent.Time > grandParent.Time && EffectiveDeltaT(parent.Time-grandParent.Time) >= TimeoutEnd {
 			boosted := new(big.Int).Mul(parentThreshold, big2)
 			if boosted.Cmp(SortitionThresholdMax) > 0 {
 				boosted = new(big.Int).Set(SortitionThresholdMax)

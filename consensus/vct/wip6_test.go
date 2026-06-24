@@ -109,6 +109,10 @@ func TestLegacySealHashMatchesECCPoW(t *testing.T) {
 func TestWIP6ProgressiveTimeoutSortition(t *testing.T) {
 	var output [32]byte
 
+	if TimeoutEnd != 70 {
+		t.Fatalf("TimeoutEnd = %d, want 70", TimeoutEnd)
+	}
+
 	output[0] = 0x1f
 	if !SortitionEligible(output, 0) {
 		t.Fatal("base-eligible output rejected")
@@ -130,6 +134,24 @@ func TestWIP6ProgressiveTimeoutSortition(t *testing.T) {
 	output[0] = 0xff
 	if !SortitionEligible(output, TimeoutEnd) {
 		t.Fatal("timeout end should accept all outputs")
+	}
+}
+
+func TestWIP6EffectiveDeltaT(t *testing.T) {
+	tests := []struct {
+		raw  uint64
+		want uint64
+	}{
+		{0, 0},
+		{VCTFutureTolerance, 0},
+		{VCTFutureTolerance + 1, 1},
+		{VCTFutureTolerance + TimeoutStart, TimeoutStart},
+		{VCTFutureTolerance + TimeoutEnd, TimeoutEnd},
+	}
+	for _, tt := range tests {
+		if got := EffectiveDeltaT(tt.raw); got != tt.want {
+			t.Fatalf("EffectiveDeltaT(%d) = %d, want %d", tt.raw, got, tt.want)
+		}
 	}
 }
 
@@ -259,14 +281,14 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 	}
 
 	// 5. Build the block header with VRF fields.
-	//    Raw deltaT = TimeoutEnd, so SortitionEligible returns true for any output.
+	//    Effective deltaT = TimeoutEnd, so SortitionEligible returns true for any output.
 	header := &types.Header{
 		ParentHash:         parentHash,
 		Coinbase:           coinbase,
 		Number:             big.NewInt(int64(blockNum)),
 		Difficulty:         big.NewInt(0x10000),
 		GasLimit:           30000000,
-		Time:               parent.Time + TimeoutEnd,
+		Time:               parent.Time + VCTFutureTolerance + TimeoutEnd,
 		VRFProof:           proof,
 		SortitionThreshold: SortitionThresholdMax,
 	}

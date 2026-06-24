@@ -22,10 +22,17 @@ import (
 	"github.com/cryptoecc/WorldLand/common"
 	"github.com/cryptoecc/WorldLand/common/hexutil"
 	"github.com/cryptoecc/WorldLand/consensus"
+	"github.com/cryptoecc/WorldLand/core/state"
 	"github.com/cryptoecc/WorldLand/core/types"
 	"github.com/cryptoecc/WorldLand/crypto"
 	"github.com/cryptoecc/WorldLand/log"
 )
+
+// stateBackend is satisfied by *core.BlockChain; it lets the sealer perform
+// the S₀ balance check before committing ECCPoW work.
+type stateBackend interface {
+	StateAt(root common.Hash) (*state.StateDB, error)
+}
 
 const staleThreshold = 7
 
@@ -60,6 +67,27 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		if err := ecc.EnsureVRFKeys(coinbase); err != nil {
 			return fmt.Errorf("VCT: VRF key error: %w", err)
 		}
+
+		// S₀: reject mining early if the coinbase balance is below the minimum
+		// eligibility threshold. blockchain.go enforces this on insertion too, but
+		// checking here avoids wasting ECCPoW work on a block that will be rejected.
+		if vctCfg := chain.Config().Vct; vctCfg != nil {
+			if s0 := vctCfg.MinEligibleBalanceAt(header.Number); s0.Sign() > 0 {
+				if sb, ok := chain.(stateBackend); ok {
+					if ph := chain.GetHeaderByHash(header.ParentHash); ph != nil {
+						if pstate, serr := sb.StateAt(ph.Root); serr == nil {
+							if bal := pstate.GetBalance(coinbase); bal.Cmp(s0) < 0 {
+								return fmt.Errorf("VCT: coinbase %s balance %s wei < S0 %s wei, not mining block %d",
+									coinbase.Hex(), bal.String(), s0.String(), blockNumber)
+							}
+						} else {
+							log.Warn("VCT: S0 check skipped: parent state unavailable", "block", blockNumber, "err", serr)
+						}
+					}
+				}
+			}
+		}
+
 		if parentHeader := chain.GetHeaderByHash(header.ParentHash); parentHeader != nil {
 			header.SortitionThreshold = ecc.CalcSortitionThreshold(chain, header.Time, parentHeader)
 			header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parentHeader)
@@ -84,7 +112,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 			if parentHeader != nil {
 				parentTime = parentHeader.Time
 			}
-			submitAt := parentTime + delay
+			submitAt := parentTime + delay + VCTFutureTolerance
 			log.Info("VCT: not immediately eligible — waiting for progressive timeout",
 				"block", blockNumber, "delay_s", delay, "submitAt", submitAt)
 

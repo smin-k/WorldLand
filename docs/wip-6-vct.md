@@ -91,19 +91,19 @@ eccpow.SealHash()와 바이트 단위로 동일. `TestLegacySealHashMatchesECCPo
 
 | 상수 | 값 | 설명 |
 |------|-----|------|
-| `SortitionBase` | `0xA0` (160/256) | 즉시 통과 임계값 (≈62.5%) |
+| `SortitionBase` | `2^253` | 목표 즉시 통과 임계값 (12.5%) |
 | `TimeoutStart` | 15초 | 임계값 확장 시작 시점 (`Δt_eff` 기준) |
-| `TimeoutEnd` | 60초 | 모든 채굴자 통과 (`Δt_eff` 기준) |
-| `VCTFutureTolerance` | 15초 | 미래 타임스탬프 허용 상수 `F` |
+| `TimeoutEnd` | 70초 | 평균 10초 지수분포의 99.9% 분위수(≈69.1초)를 올림한 값 |
+| `VCTFutureTolerance` | 5초 | 미래 타임스탬프 허용 상수 `F` |
 
-`SortitionEligible(output, Δt)`: Δt ≥ TimeoutEnd이면 무조건 통과.
+`SortitionEligible(output, Δt_eff)`: Δt_eff ≥ TimeoutEnd이면 무조건 통과.
 
 ### 타임스탬프 조작 완화 (`VCTFutureTolerance`)
 
 `TimeoutStart` / `TimeoutEnd`는 원시 `Δt = header.Time - parent.Time`이 아닌 **유효 경과 시간** `Δt_eff`를 기준으로 한다:
 
 ```
-Δt_eff = max(0, Δt - F)    // F = VCTFutureTolerance = 15
+Δt_eff = max(0, Δt - F)    // F = VCTFutureTolerance = 5
 ```
 
 검증 노드는 `verifyVRFProof`에서 `EffectiveDeltaT(rawDeltaT)`를 호출하여 `Δt_eff`로 정렬 통과 여부를 판정한다. 채굴자가 타임스탬프를 최대 `F`초 앞당겨도 `Δt_eff`는 변하지 않으므로, `F` 이하의 타임스탬프 조작은 타임아웃 자격 확대로 이어지지 않는다.
@@ -115,6 +115,7 @@ header.Time >= parent.Time + t_submit + F
 ```
 
 `sealer.go`에서 `submitAt = parentTime + delay + VCTFutureTolerance`로 계산된다.
+따라서 `Δt_eff = 70초`에서 모든 VRF 출력이 통과하며, raw header 시간 기준으로는 `70 + 5 = 75초`에서 완전 개방된다.
 
 ---
 
@@ -123,7 +124,10 @@ header.Time >= parent.Time + t_submit + F
 VCT 블록 제안자는 부모 상태 기준 최소 잔액(S₀)을 보유해야 한다.
 
 - 설정: genesis `vct.minEligibleBalance` (단위: wei)
-- 검사 위치: `WriteBlockAndSetHead()` (채굴), `insertChain()` (P2P 동기화)
+- 검사 위치:
+  - `Seal()` (채굴 진입부) — ECCPoW 연산 전 조기 거부
+  - `WriteBlockAndSetHead()` (채굴 결과 저장)
+  - `insertChain()` (P2P 동기화)
 - 검사 실패 시: 블록 거부 (`consensus.ErrProposerIneligible`)
 
 ---
@@ -191,15 +195,29 @@ type ProposerVerifier interface {
 
 VCT 엔진이 이 인터페이스를 구현하며, 부모 상태 로드 직후 블록 처리 전에 호출된다.
 
+### sealer.go S₀ 조기 거부 (`consensus/vct/sealer.go`)
+
+`Seal()` 진입부에서 ECCPoW 작업 전에 balance를 확인한다:
+```go
+// stateBackend interface — *core.BlockChain이 만족함
+if sb, ok := chain.(stateBackend); ok {
+    if bal := pstate.GetBalance(coinbase); bal.Cmp(s0) < 0 {
+        return fmt.Errorf("VCT: coinbase %s balance %s wei < S0 %s wei, ...", ...)
+    }
+}
+```
+`chain`이 `stateBackend`를 구현하지 않으면(테스트 등) 조용히 건너뛴다.
+blockchain.go의 삽입 시점 검사가 최종 보루로 항상 동작한다.
+
 ### blockchain.go S₀ 게이트 (`core/blockchain.go`)
 
-`WriteBlockAndSetHead()` (채굴 경로):
+`WriteBlockAndSetHead()` (채굴 결과 저장 경로):
 ```go
 parentState, err := bc.StateAt(parentHeader.Root)
 if err != nil {
-    // snap sync 등 부모 상태 없음 → S₀ 건너뜀. ECCPoW + VRF는 여전히 적용.
-    log.Debug("WIP-6 S₀ check skipped: parent state unavailable", ...)
-} else if err := pv.VerifyProposerEligibility(..., parentState); err != nil {
+    return NonStatTy, fmt.Errorf("WIP-6 S₀ check failed: parent state unavailable: %w", err)
+}
+if err := pv.VerifyProposerEligibility(..., parentState); err != nil {
     return NonStatTy, err
 }
 ```

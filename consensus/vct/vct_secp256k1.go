@@ -18,8 +18,15 @@ const (
 	// threshold begins expanding beyond the base threshold.
 	TimeoutStart uint64 = 15
 
-	// TimeoutEnd is the elapsed delta-t (seconds) at which all outputs are eligible.
-	TimeoutEnd uint64 = 60
+	// TimeoutEnd is the effective elapsed delta-t (seconds) at which all outputs
+	// are eligible. It is ceil(-10s * ln(0.001)), the 99.9% quantile of an
+	// exponential block-finding process with 10 second mean.
+	TimeoutEnd uint64 = 70
+
+	// VCTFutureTolerance is subtracted from raw header delta-t before applying
+	// progressive timeout sortition, so permitted future timestamps do not grant
+	// early eligibility.
+	VCTFutureTolerance uint64 = 5
 )
 
 var (
@@ -145,6 +152,15 @@ func SortitionThresholdAt(baseThreshold *big.Int, deltaT uint64) *big.Int {
 		return base
 	}
 	return threshold
+}
+
+// EffectiveDeltaT returns the elapsed time used by progressive timeout
+// sortition after discounting the consensus future-timestamp allowance.
+func EffectiveDeltaT(rawDeltaT uint64) uint64 {
+	if rawDeltaT <= VCTFutureTolerance {
+		return 0
+	}
+	return rawDeltaT - VCTFutureTolerance
 }
 
 // CheckSortition returns true if the VRF proof passes the fixed base sortition

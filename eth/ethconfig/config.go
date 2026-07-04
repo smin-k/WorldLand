@@ -31,7 +31,7 @@ import (
 	"github.com/cryptoecc/WorldLand/consensus/clique"
 	"github.com/cryptoecc/WorldLand/consensus/eccpow"
 	"github.com/cryptoecc/WorldLand/consensus/ethash"
-	"github.com/cryptoecc/WorldLand/consensus/vct"
+	"github.com/cryptoecc/WorldLand/consensus/VCT"
 	"github.com/cryptoecc/WorldLand/core"
 	"github.com/cryptoecc/WorldLand/eth/downloader"
 	"github.com/cryptoecc/WorldLand/eth/gasprice"

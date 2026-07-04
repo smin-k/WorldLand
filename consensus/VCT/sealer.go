@@ -29,7 +29,7 @@ import (
 )
 
 // stateBackend is satisfied by *core.BlockChain; it lets the sealer perform
-// the S₀ balance check before committing ECCPoW work.
+// the S0 balance check before committing ECCPoW work.
 type stateBackend interface {
 	StateAt(root common.Hash) (*state.StateDB, error)
 }
@@ -42,7 +42,7 @@ var (
 )
 
 // Seal implements consensus.Engine.
-// It checks secp256k1 VRF sortition eligibility before mining.
+// It checks secp256k1 VCT eligibility before mining.
 func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, results chan<- *types.Block, stop <-chan struct{}) error {
 	if ecc.config.PowMode == ModeFake || ecc.config.PowMode == ModeFullFake {
 		header := block.Header()
@@ -68,7 +68,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 			return fmt.Errorf("VCT: VRF key error: %w", err)
 		}
 
-		// S₀: reject mining early if the coinbase balance is below the minimum
+		// S0: reject mining early if the coinbase balance is below the minimum
 		// eligibility threshold. blockchain.go enforces this on insertion too, but
 		// checking here avoids wasting ECCPoW work on a block that will be rejected.
 		if vctCfg := chain.Config().Vct; vctCfg != nil {
@@ -89,23 +89,23 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		}
 
 		if parentHeader := chain.GetHeaderByHash(header.ParentHash); parentHeader != nil {
-			header.SortitionThreshold = ecc.CalcSortitionThreshold(chain, header.Time, parentHeader)
+			header.EligibilityThreshold = ecc.CalcEligibilityThreshold(chain, header.Time, parentHeader)
 			header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parentHeader)
 		}
 
-		// VCT phase (Rokis+): VRF sortition gates who may propose each block.
-		eligible, proof, err := ecc.IsEligibleForBlock(chain, blockNumber, block.Header().ParentHash, header.SortitionThreshold)
+		// VCT phase (Rokis+): VRF eligibility gates who may propose each block.
+		eligible, proof, err := ecc.IsEligibleForBlock(chain, blockNumber, block.Header().ParentHash, header.EligibilityThreshold)
 		if err != nil {
-			return fmt.Errorf("VCT: sortition check failed: %w", err)
+			return fmt.Errorf("VCT: eligibility check failed: %w", err)
 		}
 
 		if !eligible {
-			// WIP-6 progressive timeout: wait until Δt expands the threshold enough.
+			// WIP-6 progressive timeout: wait until deltaT expands the threshold enough.
 			output, oerr := VRFOutputFromProof(proof)
 			if oerr != nil {
 				return fmt.Errorf("VCT: cannot extract VRF output: %w", oerr)
 			}
-			delay := SortitionSubmitDelayWithBase(output, header.SortitionThreshold)
+			delay := EligibilitySubmitDelayWithBase(output, header.EligibilityThreshold)
 
 			parentHeader := chain.GetHeaderByHash(header.ParentHash)
 			var parentTime uint64
@@ -113,7 +113,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 				parentTime = parentHeader.Time
 			}
 			submitAt := parentTime + delay + VCTFutureTolerance
-			log.Info("VCT: not immediately eligible — waiting for progressive timeout",
+			log.Info("VCT: not immediately eligible; waiting for progressive timeout",
 				"block", blockNumber, "delay_s", delay, "submitAt", submitAt)
 
 			deadline := time.Unix(int64(submitAt), 0)
@@ -136,13 +136,13 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 				header.Time = submitAt
 			}
 			if parentHeader := chain.GetHeaderByHash(header.ParentHash); parentHeader != nil {
-				header.SortitionThreshold = ecc.CalcSortitionThreshold(chain, header.Time, parentHeader)
+				header.EligibilityThreshold = ecc.CalcEligibilityThreshold(chain, header.Time, parentHeader)
 				header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parentHeader)
 			}
 			log.Info("VCT: progressive timeout elapsed, proceeding with mining",
-				"block", blockNumber, "timestamp", header.Time, "difficulty", header.Difficulty, "threshold", header.SortitionThreshold)
+				"block", blockNumber, "timestamp", header.Time, "difficulty", header.Difficulty, "threshold", header.EligibilityThreshold)
 		} else {
-			log.Info("VCT: eligible to mine", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "threshold", header.SortitionThreshold)
+			log.Info("VCT: eligible to mine", "block", blockNumber, "epoch", EligibilityEpoch(blockNumber), "threshold", header.EligibilityThreshold)
 		}
 
 		// Embed VRF proof + public key in the header.
@@ -152,10 +152,10 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		copy(header.VRFPublicKey, ecc.vrfPubKey)
 		ecc.lock.Unlock()
 	} else {
-		// Pre-VCT (Seoul) phase: pure ECCPoW, no sortition gate.
+		// Pre-VCT (Seoul) phase: pure ECCPoW, no eligibility gate.
 		// VRFProof and VRFPublicKey are intentionally left empty.
-		header.SortitionThreshold = nil
-		log.Debug("VCT: pre-VCT block, skipping sortition", "block", blockNumber)
+		header.EligibilityThreshold = nil
+		log.Debug("VCT: pre-VCT block, skipping eligibility", "block", blockNumber)
 	}
 
 	block = block.WithSeal(header)
@@ -420,7 +420,7 @@ func packCodeword(outputWord []int) []byte {
 	return codeword
 }
 
-// ── Remote sealer ─────────────────────────────────────────────────────────────
+// -- Remote sealer -------------------------------------------------------------
 
 const remoteSealerTimeout = 1 * time.Second
 

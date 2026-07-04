@@ -33,7 +33,7 @@ import (
 	"github.com/cryptoecc/WorldLand/consensus"
 	"github.com/cryptoecc/WorldLand/consensus/beacon"
 	"github.com/cryptoecc/WorldLand/consensus/clique"
-	"github.com/cryptoecc/WorldLand/consensus/vct"
+	"github.com/cryptoecc/WorldLand/consensus/VCT"
 	"github.com/cryptoecc/WorldLand/core"
 	"github.com/cryptoecc/WorldLand/core/bloombits"
 	"github.com/cryptoecc/WorldLand/core/rawdb"

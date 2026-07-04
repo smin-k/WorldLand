@@ -14,7 +14,7 @@ import (
 // Progressive timeout parameters (WIP-6).
 // These are consensus-critical constants; changing them requires a hard fork.
 const (
-	// TimeoutStart is the elapsed delta-t (seconds) after which the sortition
+	// TimeoutStart is the elapsed delta-t (seconds) after which the eligibility
 	// threshold begins expanding beyond the base threshold.
 	TimeoutStart uint64 = 15
 
@@ -24,7 +24,7 @@ const (
 	TimeoutEnd uint64 = 70
 
 	// VCTFutureTolerance is subtracted from raw header delta-t before applying
-	// progressive timeout sortition, so permitted future timestamps do not grant
+	// progressive timeout eligibility, so permitted future timestamps do not grant
 	// early eligibility.
 	VCTFutureTolerance uint64 = 5
 )
@@ -32,12 +32,12 @@ const (
 var (
 	errInvalidVRFProofLen = errors.New("VRF proof must be 81 bytes")
 
-	// SortitionDenominator is 2^256, the size of the VRF output space.
-	SortitionDenominator = new(big.Int).Lsh(big.NewInt(1), 256)
-	// SortitionBase is the target base threshold after bootstrap: p = 1/8.
-	SortitionBase = new(big.Int).Lsh(big.NewInt(1), 253)
-	// SortitionThresholdMax accepts every 32-byte VRF output.
-	SortitionThresholdMax = new(big.Int).Set(SortitionDenominator)
+	// EligibilityDenominator is 2^256, the size of the VRF output space.
+	EligibilityDenominator = new(big.Int).Lsh(big.NewInt(1), 256)
+	// EligibilityBase is the target base threshold after bootstrap: p = 1/8.
+	EligibilityBase = new(big.Int).Lsh(big.NewInt(1), 253)
+	// EligibilityThresholdMax accepts every 32-byte VRF output.
+	EligibilityThresholdMax = new(big.Int).Set(EligibilityDenominator)
 )
 
 // VRFProve generates an 81-byte secp256k1 VRF proof and the corresponding
@@ -77,51 +77,51 @@ func VRFOutputFromProof(proof []byte) ([32]byte, error) {
 
 func cloneThreshold(x *big.Int) *big.Int {
 	if x == nil || x.Sign() <= 0 {
-		return new(big.Int).Set(SortitionBase)
+		return new(big.Int).Set(EligibilityBase)
 	}
-	if x.Cmp(SortitionThresholdMax) >= 0 {
-		return new(big.Int).Set(SortitionThresholdMax)
+	if x.Cmp(EligibilityThresholdMax) >= 0 {
+		return new(big.Int).Set(EligibilityThresholdMax)
 	}
-	if x.Cmp(SortitionBase) < 0 {
-		return new(big.Int).Set(SortitionBase)
+	if x.Cmp(EligibilityBase) < 0 {
+		return new(big.Int).Set(EligibilityBase)
 	}
 	return new(big.Int).Set(x)
 }
 
 func thresholdProbability(threshold *big.Int) float64 {
 	t := cloneThreshold(threshold)
-	if t.Cmp(SortitionThresholdMax) >= 0 {
+	if t.Cmp(EligibilityThresholdMax) >= 0 {
 		return 1
 	}
-	r := new(big.Rat).SetFrac(t, SortitionDenominator)
+	r := new(big.Rat).SetFrac(t, EligibilityDenominator)
 	p, _ := r.Float64()
 	return p
 }
 
 func thresholdFromProbability(p float64) *big.Int {
 	if p >= 1 {
-		return new(big.Int).Set(SortitionThresholdMax)
+		return new(big.Int).Set(EligibilityThresholdMax)
 	}
 	if p <= 0 {
 		return new(big.Int)
 	}
 	f := new(big.Float).SetPrec(320).SetMode(big.ToZero).SetFloat64(p)
-	f.Mul(f, new(big.Float).SetPrec(320).SetInt(SortitionDenominator))
+	f.Mul(f, new(big.Float).SetPrec(320).SetInt(EligibilityDenominator))
 	out, _ := f.Int(nil)
 	return out
 }
 
-// ConfigSortitionThreshold converts a config value into the consensus threshold.
+// ConfigEligibilityThreshold converts a config value into the consensus threshold.
 // Values 1..256 are treated as legacy byte-scale probabilities for convenience:
 // 32 => 12.5%, 128 => 50%, 256 => all eligible. Larger values are interpreted
 // as full uint256 thresholds.
-func ConfigSortitionThreshold(value *big.Int) *big.Int {
+func ConfigEligibilityThreshold(value *big.Int) *big.Int {
 	if value == nil || value.Sign() <= 0 {
-		return new(big.Int).Set(SortitionThresholdMax)
+		return new(big.Int).Set(EligibilityThresholdMax)
 	}
 	if value.Cmp(big.NewInt(256)) <= 0 {
 		if value.Cmp(big.NewInt(256)) == 0 {
-			return new(big.Int).Set(SortitionThresholdMax)
+			return new(big.Int).Set(EligibilityThresholdMax)
 		}
 		out := new(big.Int).Lsh(new(big.Int).Set(value), 248)
 		return cloneThreshold(out)
@@ -129,18 +129,18 @@ func ConfigSortitionThreshold(value *big.Int) *big.Int {
 	return cloneThreshold(value)
 }
 
-// SortitionThresholdAt returns the uint256 eligibility threshold for a given
+// EligibilityThresholdAt returns the uint256 eligibility threshold for a given
 // elapsed block time deltaT.
-func SortitionThresholdAt(baseThreshold *big.Int, deltaT uint64) *big.Int {
+func EligibilityThresholdAt(baseThreshold *big.Int, deltaT uint64) *big.Int {
 	base := cloneThreshold(baseThreshold)
-	if base.Cmp(SortitionThresholdMax) >= 0 {
-		return new(big.Int).Set(SortitionThresholdMax)
+	if base.Cmp(EligibilityThresholdMax) >= 0 {
+		return new(big.Int).Set(EligibilityThresholdMax)
 	}
 	if deltaT < TimeoutStart {
 		return base
 	}
 	if deltaT >= TimeoutEnd {
-		return new(big.Int).Set(SortitionThresholdMax)
+		return new(big.Int).Set(EligibilityThresholdMax)
 	}
 	p0 := thresholdProbability(base)
 	ts := float64(TimeoutStart)
@@ -155,7 +155,7 @@ func SortitionThresholdAt(baseThreshold *big.Int, deltaT uint64) *big.Int {
 }
 
 // EffectiveDeltaT returns the elapsed time used by progressive timeout
-// sortition after discounting the consensus future-timestamp allowance.
+// eligibility after discounting the consensus future-timestamp allowance.
 func EffectiveDeltaT(rawDeltaT uint64) uint64 {
 	if rawDeltaT <= VCTFutureTolerance {
 		return 0
@@ -163,61 +163,61 @@ func EffectiveDeltaT(rawDeltaT uint64) uint64 {
 	return rawDeltaT - VCTFutureTolerance
 }
 
-// CheckSortition returns true if the VRF proof passes the fixed base sortition
+// CheckEligibility returns true if the VRF proof passes the fixed base eligibility
 // threshold. The 32-byte VRF output is interpreted as a big-endian uint256.
-func CheckSortition(proof []byte) bool {
+func CheckEligibility(proof []byte) bool {
 	output, err := VRFOutputFromProof(proof)
 	if err != nil {
 		return false
 	}
-	return SortitionEligibleWithBase(output, SortitionBase, 0)
+	return EligibilityPassesWithBase(output, EligibilityBase, 0)
 }
 
-func SortitionEligible(output [32]byte, deltaT uint64) bool {
-	return SortitionEligibleWithBase(output, SortitionBase, deltaT)
+func EligibilityPasses(output [32]byte, deltaT uint64) bool {
+	return EligibilityPassesWithBase(output, EligibilityBase, deltaT)
 }
 
-// SortitionEligibleWithBase returns true if the VRF output passes the
+// EligibilityPassesWithBase returns true if the VRF output passes the
 // time-dependent threshold derived from the block's base threshold.
-func SortitionEligibleWithBase(output [32]byte, baseThreshold *big.Int, deltaT uint64) bool {
+func EligibilityPassesWithBase(output [32]byte, baseThreshold *big.Int, deltaT uint64) bool {
 	if deltaT >= TimeoutEnd {
 		return true
 	}
-	threshold := SortitionThresholdAt(baseThreshold, deltaT)
-	if threshold.Cmp(SortitionThresholdMax) >= 0 {
+	threshold := EligibilityThresholdAt(baseThreshold, deltaT)
+	if threshold.Cmp(EligibilityThresholdMax) >= 0 {
 		return true
 	}
 	return new(big.Int).SetBytes(output[:]).Cmp(threshold) < 0
 }
 
-func CheckSortitionWithTime(proof []byte, deltaT uint64) bool {
-	return CheckSortitionWithBaseAndTime(proof, SortitionBase, deltaT)
+func CheckEligibilityWithTime(proof []byte, deltaT uint64) bool {
+	return CheckEligibilityWithBaseAndTime(proof, EligibilityBase, deltaT)
 }
 
-// CheckSortitionWithBaseAndTime is CheckSortitionWithTime parameterized by the
+// CheckEligibilityWithBaseAndTime is CheckEligibilityWithTime parameterized by the
 // block's adaptive base threshold.
-func CheckSortitionWithBaseAndTime(proof []byte, baseThreshold *big.Int, deltaT uint64) bool {
+func CheckEligibilityWithBaseAndTime(proof []byte, baseThreshold *big.Int, deltaT uint64) bool {
 	output, err := VRFOutputFromProof(proof)
 	if err != nil {
 		return false
 	}
-	return SortitionEligibleWithBase(output, baseThreshold, deltaT)
+	return EligibilityPassesWithBase(output, baseThreshold, deltaT)
 }
 
-func SortitionSubmitDelay(output [32]byte) uint64 {
-	return SortitionSubmitDelayWithBase(output, SortitionBase)
+func EligibilitySubmitDelay(output [32]byte) uint64 {
+	return EligibilitySubmitDelayWithBase(output, EligibilityBase)
 }
 
-// SortitionSubmitDelayWithBase returns the minimum elapsed seconds needed
+// EligibilitySubmitDelayWithBase returns the minimum elapsed seconds needed
 // under the provided adaptive base threshold.
-func SortitionSubmitDelayWithBase(output [32]byte, baseThreshold *big.Int) uint64 {
+func EligibilitySubmitDelayWithBase(output [32]byte, baseThreshold *big.Int) uint64 {
 	base := cloneThreshold(baseThreshold)
-	if base.Cmp(SortitionThresholdMax) >= 0 || new(big.Int).SetBytes(output[:]).Cmp(base) < 0 {
+	if base.Cmp(EligibilityThresholdMax) >= 0 || new(big.Int).SetBytes(output[:]).Cmp(base) < 0 {
 		return 0
 	}
 	next := new(big.Int).SetBytes(output[:])
 	next.Add(next, big.NewInt(1))
-	qRat := new(big.Rat).SetFrac(next, SortitionDenominator)
+	qRat := new(big.Rat).SetFrac(next, EligibilityDenominator)
 	q, _ := qRat.Float64()
 	p0 := thresholdProbability(base)
 	ts := float64(TimeoutStart)
@@ -231,7 +231,7 @@ func SortitionSubmitDelayWithBase(output [32]byte, baseThreshold *big.Int) uint6
 	if out < TimeoutStart {
 		out = TimeoutStart
 	}
-	for out < TimeoutEnd && !SortitionEligibleWithBase(output, base, out) {
+	for out < TimeoutEnd && !EligibilityPassesWithBase(output, base, out) {
 		out++
 	}
 	return out

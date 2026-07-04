@@ -231,7 +231,7 @@ var (
 		Threshold: 2,
 	}
 
-	// GoerliChainConfig contains the chain parameters to run a node on the Görli test network.
+	// GoerliChainConfig contains the chain parameters to run a node on the Goerli test network.
 	GoerliChainConfig = &ChainConfig{
 		ChainID:                       big.NewInt(5),
 		HomesteadBlock:                big.NewInt(0),
@@ -256,7 +256,7 @@ var (
 		},
 	}
 
-	// GoerliTrustedCheckpoint contains the light client trusted checkpoint for the Görli test network.
+	// GoerliTrustedCheckpoint contains the light client trusted checkpoint for the Goerli test network.
 	GoerliTrustedCheckpoint = &TrustedCheckpoint{
 		SectionIndex: 210,
 		SectionHead:  common.HexToHash("0xbb11eaf551a6c06f74a6c7bbfe1699cbf64b8f248b64691da916dd443176db2f"),
@@ -298,8 +298,8 @@ var (
 		HalvingEndTime:      big.NewInt(25228800),
 		Eccpow:              new(EccpowConfig),
 		Vct: &VctConfig{
-			MinEligibleBalance:        new(big.Int).Mul(big.NewInt(100), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)),
-			InitialSortitionThreshold: big.NewInt(256),
+			MinEligibleBalance:          new(big.Int).Mul(big.NewInt(100), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)),
+			InitialEligibilityThreshold: big.NewInt(256),
 		},
 	}
 
@@ -640,10 +640,10 @@ type VctConfig struct {
 	// MinEligibleBalance is S0 (in wei): minimum parent-state balance required for a proposer.
 	// nil or zero means no restriction.
 	MinEligibleBalance *big.Int `json:"minEligibleBalance,omitempty"`
-	// InitialSortitionThreshold is the base VRF uint256 threshold used for the
+	// InitialEligibilityThreshold is the base VRF uint256 threshold used for the
 	// first VCT block. Values 1..256 are accepted as legacy byte-scale
 	// probabilities and converted by the VCT engine; nil or zero defaults to 2^256.
-	InitialSortitionThreshold *big.Int `json:"initialSortitionThreshold,omitempty"`
+	InitialEligibilityThreshold *big.Int `json:"initialEligibilityThreshold,omitempty"`
 	// S0ForkBlock is the block number where MinEligibleBalance changes to S0ForkBalance.
 	S0ForkBlock *big.Int `json:"s0ForkBlock,omitempty"`
 	// S0ForkBalance is the new S0 value applied at and after S0ForkBlock.

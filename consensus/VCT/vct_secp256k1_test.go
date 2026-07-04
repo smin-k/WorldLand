@@ -76,9 +76,9 @@ func TestVCTVRFDeriveKeys(t *testing.T) {
 	}
 }
 
-func TestVCTCheckSortition(t *testing.T) {
+func TestVCTCheckEligibility(t *testing.T) {
 	seckey, pubkey := makeTestKeypair(t)
-	msg := []byte("sortition seed")
+	msg := []byte("eligibility seed")
 
 	proof, _, err := VRFProve(seckey, pubkey, msg)
 	if err != nil {
@@ -86,6 +86,6 @@ func TestVCTCheckSortition(t *testing.T) {
 	}
 
 	// Just check it doesn't panic and returns a bool
-	result := CheckSortition(proof)
-	t.Logf("sortition result: %v (first byte = 0x%02x)", result, proof[0])
+	result := CheckEligibility(proof)
+	t.Logf("eligibility result: %v (first byte = 0x%02x)", result, proof[0])
 }

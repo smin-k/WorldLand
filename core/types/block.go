@@ -96,10 +96,10 @@ type Header struct {
 	VRFPublicKey []byte `json:"vrfPublicKey" rlp:"optional"`
 	// VRFSignature is the per-nonce ECDSA mining signature (65 bytes) for anti-delegation.
 	VRFSignature []byte `json:"vrfSignature" rlp:"optional"`
-	// SortitionThreshold is the VCT base VRF uint256 threshold for this block.
+	// EligibilityThreshold is the VCT base VRF uint256 threshold for this block.
 	// The 32-byte VRF output is interpreted as a big-endian uint256 and compared
 	// against this value. Nil means absent in legacy/pre-VCT headers.
-	SortitionThreshold *big.Int `json:"sortitionThreshold" rlp:"optional"`
+	EligibilityThreshold *big.Int `json:"eligibilityThreshold" rlp:"optional"`
 
 	/*
 		TODO (MariusVanDerWijden) Add this field once needed
@@ -110,17 +110,17 @@ type Header struct {
 
 // field type overrides for gencodec
 type headerMarshaling struct {
-	Difficulty         *hexutil.Big
-	Number             *hexutil.Big
-	GasLimit           hexutil.Uint64
-	GasUsed            hexutil.Uint64
-	Time               hexutil.Uint64
-	Extra              hexutil.Bytes
-	BaseFee            *hexutil.Big
-	Codeword           hexutil.Bytes
-	CodeLength         hexutil.Uint64
-	SortitionThreshold *hexutil.Big
-	Hash               common.Hash `json:"hash"` // adds call to Hash() in MarshalJSON
+	Difficulty           *hexutil.Big
+	Number               *hexutil.Big
+	GasLimit             hexutil.Uint64
+	GasUsed              hexutil.Uint64
+	Time                 hexutil.Uint64
+	Extra                hexutil.Bytes
+	BaseFee              *hexutil.Big
+	Codeword             hexutil.Bytes
+	CodeLength           hexutil.Uint64
+	EligibilityThreshold *hexutil.Big
+	Hash                 common.Hash `json:"hash"` // adds call to Hash() in MarshalJSON
 }
 
 // Hash returns the block hash of the header, which is simply the keccak256 hash of its
@@ -285,8 +285,8 @@ func CopyHeader(h *Header) *Header {
 		cpy.Codeword = make([]byte, len(h.Codeword))
 		copy(cpy.Codeword, h.Codeword)
 	}
-	if h.SortitionThreshold != nil {
-		cpy.SortitionThreshold = new(big.Int).Set(h.SortitionThreshold)
+	if h.EligibilityThreshold != nil {
+		cpy.EligibilityThreshold = new(big.Int).Set(h.EligibilityThreshold)
 	}
 	return &cpy
 }

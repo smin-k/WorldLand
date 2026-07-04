@@ -106,7 +106,7 @@ func TestLegacySealHashMatchesECCPoW(t *testing.T) {
 	}
 }
 
-func TestWIP6ProgressiveTimeoutSortition(t *testing.T) {
+func TestWIP6ProgressiveTimeoutEligibility(t *testing.T) {
 	var output [32]byte
 
 	if TimeoutEnd != 70 {
@@ -114,25 +114,25 @@ func TestWIP6ProgressiveTimeoutSortition(t *testing.T) {
 	}
 
 	output[0] = 0x1f
-	if !SortitionEligible(output, 0) {
+	if !EligibilityPasses(output, 0) {
 		t.Fatal("base-eligible output rejected")
 	}
 
 	output[0] = 0x20
-	if SortitionEligible(output, TimeoutStart-1) {
+	if EligibilityPasses(output, TimeoutStart-1) {
 		t.Fatal("non-base output accepted before timeout start")
 	}
 
-	delay := SortitionSubmitDelay(output)
+	delay := EligibilitySubmitDelay(output)
 	if delay < TimeoutStart || delay > TimeoutEnd {
 		t.Fatalf("submit delay out of range: %d", delay)
 	}
-	if !SortitionEligible(output, delay) {
+	if !EligibilityPasses(output, delay) {
 		t.Fatalf("output not eligible at computed delay %d", delay)
 	}
 
 	output[0] = 0xff
-	if !SortitionEligible(output, TimeoutEnd) {
+	if !EligibilityPasses(output, TimeoutEnd) {
 		t.Fatal("timeout end should accept all outputs")
 	}
 }
@@ -155,7 +155,7 @@ func TestWIP6EffectiveDeltaT(t *testing.T) {
 	}
 }
 
-func TestWIP6AdaptiveSortitionThreshold(t *testing.T) {
+func TestWIP6AdaptiveEligibilityThreshold(t *testing.T) {
 	cfg := &params.ChainConfig{
 		ChainID:  big.NewInt(10399),
 		VCTBlock: big.NewInt(100),
@@ -173,26 +173,26 @@ func TestWIP6AdaptiveSortitionThreshold(t *testing.T) {
 		cfg:     cfg,
 		headers: map[common.Hash]*types.Header{preForkParent.Hash(): preForkParent},
 	}
-	if got := ecc.CalcSortitionThreshold(chain, preForkParent.Time+1, preForkParent); got.Cmp(SortitionThresholdMax) != 0 {
-		t.Fatalf("first VCT threshold = %v, want %v", got, SortitionThresholdMax)
+	if got := ecc.CalcEligibilityThreshold(chain, preForkParent.Time+1, preForkParent); got.Cmp(EligibilityThresholdMax) != 0 {
+		t.Fatalf("first VCT threshold = %v, want %v", got, EligibilityThresholdMax)
 	}
 
 	vctParent := &types.Header{
-		ParentHash:         preForkParent.Hash(),
-		Number:             big.NewInt(100),
-		UncleHash:          types.EmptyUncleHash,
-		Difficulty:         new(big.Int).Set(preForkParent.Difficulty),
-		Time:               preForkParent.Time + 1,
-		SortitionThreshold: SortitionThresholdMax,
+		ParentHash:           preForkParent.Hash(),
+		Number:               big.NewInt(100),
+		UncleHash:            types.EmptyUncleHash,
+		Difficulty:           new(big.Int).Set(preForkParent.Difficulty),
+		Time:                 preForkParent.Time + 1,
+		EligibilityThreshold: EligibilityThresholdMax,
 	}
 	chain.headers[vctParent.Hash()] = vctParent
 
-	threshold := ecc.CalcSortitionThreshold(chain, vctParent.Time+1, vctParent)
-	if threshold.Cmp(SortitionThresholdMax) >= 0 {
+	threshold := ecc.CalcEligibilityThreshold(chain, vctParent.Time+1, vctParent)
+	if threshold.Cmp(EligibilityThresholdMax) >= 0 {
 		t.Fatalf("fast block did not lower threshold: got %v", threshold)
 	}
-	if threshold.Cmp(SortitionBase) < 0 {
-		t.Fatalf("threshold below SortitionBase: got %v, base %v", threshold, SortitionBase)
+	if threshold.Cmp(EligibilityBase) < 0 {
+		t.Fatalf("threshold below EligibilityBase: got %v, base %v", threshold, EligibilityBase)
 	}
 	if diff := ecc.CalcDifficulty(chain, vctParent.Time+1, vctParent); diff.Cmp(vctParent.Difficulty) != 0 {
 		t.Fatalf("difficulty changed during threshold bootstrap: got %v want %v", diff, vctParent.Difficulty)
@@ -203,13 +203,13 @@ func TestWIP6AdaptiveSortitionThreshold(t *testing.T) {
 		t.Fatalf("difficulty did not decrease when threshold was already maxed and block was slow: got %v parent %v", slowDiff, vctParent.Difficulty)
 	}
 
-	vctParent.SortitionThreshold = new(big.Int).Set(SortitionBase)
+	vctParent.EligibilityThreshold = new(big.Int).Set(EligibilityBase)
 	if diff := ecc.CalcDifficulty(chain, vctParent.Time+1, vctParent); diff.Cmp(vctParent.Difficulty) <= 0 {
 		t.Fatalf("difficulty did not resume after threshold reached base: got %v parent %v", diff, vctParent.Difficulty)
 	}
 }
 
-func TestWIP6RokisDifficultyFloorAtFork(t *testing.T) {
+func TestWIP8VCTMinimumDifficultyAtFork(t *testing.T) {
 	cfg := &params.ChainConfig{
 		ChainID:  big.NewInt(10399),
 		VCTBlock: big.NewInt(100),
@@ -227,14 +227,14 @@ func TestWIP6RokisDifficultyFloorAtFork(t *testing.T) {
 		headers: map[common.Hash]*types.Header{parent.Hash(): parent},
 	}
 	diff := ecc.CalcDifficulty(chain, parent.Time+1, parent)
-	if diff.Cmp(RokisDifficulty) != 0 {
-		t.Fatalf("first Rokis difficulty = %v, want floor %v", diff, RokisDifficulty)
+	if diff.Cmp(VCTMinimumDifficulty) != 0 {
+		t.Fatalf("first VCT difficulty = %v, want minimum %v", diff, VCTMinimumDifficulty)
 	}
 }
 
 // TestVCTVRFFullPipeline exercises the complete VRF pipeline in WIP-6 mode:
 //
-//	SetVRFKey → EnsureVRFKeys → IsEligibleForBlock → verifyVRFProof → verifyMiningSig
+//	SetVRFKey -> EnsureVRFKeys -> IsEligibleForBlock -> verifyVRFProof -> verifyMiningSig
 func TestVCTVRFFullPipeline(t *testing.T) {
 	// 1. Generate a secp256k1 key pair and derive the coinbase address.
 	seckey, _ := makeTestKeypair(t)
@@ -275,22 +275,22 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 
 	// 4. Generate VRF proof through the real IsEligibleForBlock path.
 	parentHash := parent.Hash()
-	_, proof, err := ecc.IsEligibleForBlock(chain, blockNum, parentHash, SortitionThresholdMax)
+	_, proof, err := ecc.IsEligibleForBlock(chain, blockNum, parentHash, EligibilityThresholdMax)
 	if err != nil {
 		t.Fatalf("IsEligibleForBlock: %v", err)
 	}
 
 	// 5. Build the block header with VRF fields.
-	//    Effective deltaT = TimeoutEnd, so SortitionEligible returns true for any output.
+	//    Effective deltaT = TimeoutEnd, so EligibilityPasses returns true for any output.
 	header := &types.Header{
-		ParentHash:         parentHash,
-		Coinbase:           coinbase,
-		Number:             big.NewInt(int64(blockNum)),
-		Difficulty:         big.NewInt(0x10000),
-		GasLimit:           30000000,
-		Time:               parent.Time + VCTFutureTolerance + TimeoutEnd,
-		VRFProof:           proof,
-		SortitionThreshold: SortitionThresholdMax,
+		ParentHash:           parentHash,
+		Coinbase:             coinbase,
+		Number:               big.NewInt(int64(blockNum)),
+		Difficulty:           big.NewInt(0x10000),
+		GasLimit:             30000000,
+		Time:                 parent.Time + VCTFutureTolerance + TimeoutEnd,
+		VRFProof:             proof,
+		EligibilityThreshold: EligibilityThresholdMax,
 	}
 	ecc.lock.Lock()
 	header.VRFPublicKey = make([]byte, len(ecc.vrfPubKey))
@@ -298,7 +298,7 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 	ecc.lock.Unlock()
 
 	// 6. verifyVRFProof: checks PubkeyToAddress(VRFPublicKey)==Coinbase,
-	//    VRFVerify, and time-dependent sortition threshold.
+	//    VRFVerify, and time-dependent eligibility threshold.
 	if err := ecc.verifyVRFProof(chain, header, parent); err != nil {
 		t.Fatalf("verifyVRFProof: %v", err)
 	}

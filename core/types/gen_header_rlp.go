@@ -90,15 +90,15 @@ func (obj *Header) EncodeRLP(_w io.Writer) error {
 			w.WriteBytes(obj.VRFSignature)
 		}
 	}
-	_tmp6 := obj.SortitionThreshold != nil
+	_tmp6 := obj.EligibilityThreshold != nil
 	if _tmp6 {
-		if obj.SortitionThreshold == nil {
+		if obj.EligibilityThreshold == nil {
 			w.Write(rlp.EmptyString)
 		} else {
-			if obj.SortitionThreshold.Sign() == -1 {
+			if obj.EligibilityThreshold.Sign() == -1 {
 				return rlp.ErrNegativeBigInt
 			}
-			w.WriteBigInt(obj.SortitionThreshold)
+			w.WriteBigInt(obj.EligibilityThreshold)
 		}
 	}
 	w.ListEnd(_tmp0)

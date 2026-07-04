@@ -29,7 +29,7 @@ import (
 var (
 	VCTBlockReward       = new(big.Int).Mul(big.NewInt(20), big.NewInt(1e+18))
 	VCTTreasuryAddress   = common.HexToAddress("0x4C7dE6771DC602176b25fD4E1ae5550A3eAa06dF")
-	VCT_HALVING_INTERVAL = uint64(12614400)
+	VCTMinimumDifficulty = big.NewInt(65536)
 
 	FrontierBlockReward       = big.NewInt(5e+18)
 	ByzantiumBlockReward      = big.NewInt(3e+18)
@@ -219,12 +219,12 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 		return fmt.Errorf("invalid vct difficulty: have %v, want %v", header.Difficulty, expectDiff)
 	}
 	if isVCT {
-		expectThreshold := ecc.CalcSortitionThreshold(chain, header.Time, parent)
-		if header.SortitionThreshold == nil || header.SortitionThreshold.Cmp(expectThreshold) != 0 {
-			return fmt.Errorf("invalid vct sortition threshold: have %v, want %v", header.SortitionThreshold, expectThreshold)
+		expectThreshold := ecc.CalcEligibilityThreshold(chain, header.Time, parent)
+		if header.EligibilityThreshold == nil || header.EligibilityThreshold.Cmp(expectThreshold) != 0 {
+			return fmt.Errorf("invalid vct eligibility threshold: have %v, want %v", header.EligibilityThreshold, expectThreshold)
 		}
-	} else if header.SortitionThreshold != nil {
-		return fmt.Errorf("invalid pre-VCT sortition threshold: have %v, want nil", header.SortitionThreshold)
+	} else if header.EligibilityThreshold != nil {
+		return fmt.Errorf("invalid pre-VCT eligibility threshold: have %v, want nil", header.EligibilityThreshold)
 	}
 	if header.GasLimit > params.MaxGasLimit {
 		return fmt.Errorf("invalid gasLimit: have %v, max %v", header.GasLimit, params.MaxGasLimit)
@@ -269,14 +269,14 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 
 // verifyVRFProof checks the secp256k1 VRF proof stored in the block header.
 // Pre-VCT blocks (Seoul phase) carry no VRF proof and are skipped.
-// parent must be non-nil; it is used to compute Δt for progressive timeout verification.
+// parent must be non-nil; it is used to compute deltaT for progressive timeout verification.
 func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent *types.Header) error {
 	if !chain.Config().IsVCT(header.Number) {
-		// Seoul phase: pure ECCPoW, no sortition proof required.
+		// Seoul phase: pure ECCPoW, no eligibility proof required.
 		return nil
 	}
-	if header.SortitionThreshold == nil || header.SortitionThreshold.Sign() <= 0 || header.SortitionThreshold.Cmp(SortitionThresholdMax) > 0 {
-		return fmt.Errorf("VCT: invalid sortition threshold %v", header.SortitionThreshold)
+	if header.EligibilityThreshold == nil || header.EligibilityThreshold.Sign() <= 0 || header.EligibilityThreshold.Cmp(EligibilityThresholdMax) > 0 {
+		return fmt.Errorf("VCT: invalid eligibility threshold %v", header.EligibilityThreshold)
 	}
 	if len(header.VRFProof) == 0 {
 		return errors.New("VCT: VRF proof missing")
@@ -301,7 +301,7 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 	chainIDBytes := ecc.chainIDBytes()
 	msg := computeVRFMsg(chainIDBytes, header.ParentHash.Bytes(), blockNumber)
 
-	// Compute elapsed header time for progressive timeout sortition.
+	// Compute elapsed header time for progressive timeout eligibility.
 	if header.Time > parent.Time {
 		rawDeltaT = header.Time - parent.Time
 	}
@@ -312,42 +312,46 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 	}
 
 	// WIP-6: time-dependent threshold (progressive timeout liveness guarantee).
-	if !CheckSortitionWithBaseAndTime(header.VRFProof, header.SortitionThreshold, deltaT) {
-		return fmt.Errorf("VCT: VRF proof does not pass sortition threshold (raw Δt=%d s, effective Δt=%d s)", rawDeltaT, deltaT)
+	if !CheckEligibilityWithBaseAndTime(header.VRFProof, header.EligibilityThreshold, deltaT) {
+		return fmt.Errorf("VCT: VRF proof does not pass eligibility threshold (raw deltaT=%d s, effective deltaT=%d s)", rawDeltaT, deltaT)
 	}
 
-	log.Debug("VCT: VRF proof verified", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "rawDeltaT", rawDeltaT, "effectiveDeltaT", deltaT)
+	log.Debug("VCT: VRF proof verified", "block", blockNumber, "epoch", EligibilityEpoch(blockNumber), "rawDeltaT", rawDeltaT, "effectiveDeltaT", deltaT)
 	return nil
 }
 
 func (ecc *ECC) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	next := new(big.Int).Add(parent.Number, big1)
 	if chain.Config().IsVCT(next) {
-		rawDiff := ecc.calcBaseDifficulty(chain, time, parent)
-		threshold := ecc.CalcSortitionThreshold(chain, time, parent)
-		if threshold.Cmp(SortitionBase) > 0 {
-			if parent.Difficulty.Cmp(RokisDifficulty) < 0 {
-				return new(big.Int).Set(RokisDifficulty)
-			}
+		rawDiff := applyVCTMinimumDifficulty(ecc.calcBaseDifficulty(chain, time, parent))
+		threshold := ecc.CalcEligibilityThreshold(chain, time, parent)
+		if threshold.Cmp(EligibilityBase) > 0 {
 			// During bootstrap, spend difficulty-increase pressure on lowering
-			// the sortition threshold first. If the threshold is already maxed
+			// the eligibility threshold first. If the threshold is already maxed
 			// out and blocks are still slow, probability cannot be raised further,
 			// so difficulty must be allowed to decrease for liveness.
-			if threshold.Cmp(SortitionThresholdMax) >= 0 && rawDiff.Cmp(parent.Difficulty) < 0 {
+			if threshold.Cmp(EligibilityThresholdMax) >= 0 && rawDiff.Cmp(parent.Difficulty) < 0 {
 				return rawDiff
 			}
-			return new(big.Int).Set(parent.Difficulty)
+			return applyVCTMinimumDifficulty(parent.Difficulty)
 		}
 		return rawDiff
 	}
 	return ecc.calcBaseDifficulty(chain, time, parent)
 }
 
+func applyVCTMinimumDifficulty(diff *big.Int) *big.Int {
+	if diff.Cmp(VCTMinimumDifficulty) < 0 {
+		return new(big.Int).Set(VCTMinimumDifficulty)
+	}
+	return new(big.Int).Set(diff)
+}
+
 func (ecc *ECC) calcBaseDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	next := new(big.Int).Add(parent.Number, big1)
 	switch {
 	case chain.Config().IsVCT(next):
-		return calcDifficultyRokis(chain, time, parent)
+		return calcDifficultyAnnapurna(chain, time, parent)
 	case chain.Config().IsAnnapurna(next):
 		return calcDifficultyAnnapurna(chain, time, parent)
 	case chain.Config().IsSeoul(next):
@@ -357,26 +361,26 @@ func (ecc *ECC) calcBaseDifficulty(chain consensus.ChainHeaderReader, time uint6
 	}
 }
 
-// CalcSortitionThreshold returns the adaptive VCT base sortition threshold for
+// CalcEligibilityThreshold returns the adaptive VCT base eligibility threshold for
 // the child block of parent at the given timestamp. During bootstrap it starts
 // at 256 (all VRF outputs immediately eligible) and spends the difficulty
-// adjustment signal on lowering the threshold down to SortitionBase before
+// adjustment signal on lowering the threshold down to EligibilityBase before
 // allowing ECCPoW difficulty to move again.
-func (ecc *ECC) CalcSortitionThreshold(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
+func (ecc *ECC) CalcEligibilityThreshold(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	next := new(big.Int).Add(parent.Number, big1)
 	if !chain.Config().IsVCT(next) {
 		return nil
 	}
 	if !chain.Config().IsVCT(parent.Number) {
-		if cfg := chain.Config().Vct; cfg != nil && cfg.InitialSortitionThreshold != nil && cfg.InitialSortitionThreshold.Sign() > 0 {
-			return ConfigSortitionThreshold(cfg.InitialSortitionThreshold)
+		if cfg := chain.Config().Vct; cfg != nil && cfg.InitialEligibilityThreshold != nil && cfg.InitialEligibilityThreshold.Sign() > 0 {
+			return ConfigEligibilityThreshold(cfg.InitialEligibilityThreshold)
 		}
-		return new(big.Int).Set(SortitionThresholdMax)
+		return new(big.Int).Set(EligibilityThresholdMax)
 	}
-	parentThreshold := cloneThreshold(parent.SortitionThreshold)
+	parentThreshold := cloneThreshold(parent.EligibilityThreshold)
 
 	threshold := new(big.Int).Set(parentThreshold)
-	if parentThreshold.Cmp(SortitionBase) > 0 {
+	if parentThreshold.Cmp(EligibilityBase) > 0 {
 		rawDiff := ecc.calcBaseDifficulty(chain, time, parent)
 		if rawDiff.Sign() > 0 && parent.Difficulty.Sign() > 0 {
 			num := new(big.Int).Mul(new(big.Int).Set(parentThreshold), parent.Difficulty)
@@ -393,8 +397,8 @@ func (ecc *ECC) CalcSortitionThreshold(chain consensus.ChainHeaderReader, time u
 		grandParent := chain.GetHeader(parent.ParentHash, parent.Number.Uint64()-1)
 		if grandParent != nil && parent.Time > grandParent.Time && EffectiveDeltaT(parent.Time-grandParent.Time) >= TimeoutEnd {
 			boosted := new(big.Int).Mul(parentThreshold, big2)
-			if boosted.Cmp(SortitionThresholdMax) > 0 {
-				boosted = new(big.Int).Set(SortitionThresholdMax)
+			if boosted.Cmp(EligibilityThresholdMax) > 0 {
+				boosted = new(big.Int).Set(EligibilityThresholdMax)
 			}
 			if threshold.Cmp(boosted) < 0 {
 				threshold = boosted
@@ -402,11 +406,11 @@ func (ecc *ECC) CalcSortitionThreshold(chain consensus.ChainHeaderReader, time u
 		}
 	}
 
-	if threshold.Cmp(SortitionThresholdMax) > 0 {
-		threshold = new(big.Int).Set(SortitionThresholdMax)
+	if threshold.Cmp(EligibilityThresholdMax) > 0 {
+		threshold = new(big.Int).Set(EligibilityThresholdMax)
 	}
-	if threshold.Cmp(SortitionBase) < 0 {
-		threshold = new(big.Int).Set(SortitionBase)
+	if threshold.Cmp(EligibilityBase) < 0 {
+		threshold = new(big.Int).Set(EligibilityBase)
 	}
 	return threshold
 }
@@ -434,14 +438,6 @@ func calcDifficultySeoul(chain consensus.ChainHeaderReader, time uint64, parent 
 
 func calcDifficultyAnnapurna(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	return MakeLDPCDifficultyCalculatorAnnapurna()(time, parent)
-}
-
-func calcDifficultyRokis(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
-	diff := calcDifficultyAnnapurna(chain, time, parent)
-	if diff.Cmp(RokisDifficulty) < 0 {
-		return new(big.Int).Set(RokisDifficulty)
-	}
-	return diff
 }
 
 var FrontierDifficultyCalculator = calcDifficultyFrontier
@@ -512,9 +508,9 @@ func (ecc *ECC) Prepare(chain consensus.ChainHeaderReader, header *types.Header)
 		return consensus.ErrUnknownAncestor
 	}
 	if chain.Config().IsVCT(header.Number) {
-		header.SortitionThreshold = ecc.CalcSortitionThreshold(chain, header.Time, parent)
+		header.EligibilityThreshold = ecc.CalcEligibilityThreshold(chain, header.Time, parent)
 	} else {
-		header.SortitionThreshold = nil
+		header.EligibilityThreshold = nil
 	}
 	header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parent)
 	if chain.Config().ChainID != nil {
@@ -545,10 +541,10 @@ func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 	hasher.Write([]byte("VCT_SEAL"))
 	hasher.Write(ecc.chainIDBytes())
 	// Block template fields only. Excluded (all set during Seal/mining):
-	//   Nonce, MixDigest, Codeword — PoW outputs
-	//   VRFSignature               — per-nonce mining signature
-	//   CodeLength                 — derived from difficulty by mine_seoul and written back
-	// VRFPublicKey, VRFProof, and SortitionThreshold are included because they
+	//   Nonce, MixDigest, Codeword - PoW outputs
+	//   VRFSignature               - per-nonce mining signature
+	//   CodeLength                 - derived from difficulty by mine_seoul and written back
+	// VRFPublicKey, VRFProof, and EligibilityThreshold are included because they
 	// select and prove the VRF eligibility gate.
 	enc := []interface{}{
 		header.ParentHash, header.UncleHash, header.Coinbase,
@@ -556,7 +552,7 @@ func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 		header.Bloom, header.Difficulty, header.Number,
 		header.GasLimit, header.GasUsed, header.Time, header.Extra,
 		header.VRFPublicKey, header.VRFProof,
-		header.SortitionThreshold,
+		header.EligibilityThreshold,
 	}
 	if header.BaseFee != nil {
 		enc = append(enc, header.BaseFee)
@@ -567,7 +563,7 @@ func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 }
 
 // legacySealHash returns the pre-VCT (Seoul-phase) block seal hash.
-// It matches eccpow.SealHash exactly — no domain prefix — so that pre-fork
+// It matches eccpow.SealHash exactly, with no domain prefix, so that pre-fork
 // blocks can be cross-validated between old eccpow nodes and this VCT engine.
 func legacySealHash(header *types.Header) (hash common.Hash) {
 	hasher := sha3.NewLegacyKeccak256()
@@ -586,9 +582,9 @@ func legacySealHash(header *types.Header) (hash common.Hash) {
 }
 
 // verifyMiningSig checks that header.VRFSignature is a valid per-nonce mining
-// signature by the block's coinbase: ECRecover(σ_ν, m_ν) = coinbase.
-// WIP-6 (isVCT=true): m_ν = Keccak256(VCT_MINE || sealHash || nonce).
-// Pre-WIP-6:          m_ν = Keccak256(VCT_MINE || chainId || sealHash || nonce).
+// signature by the block's coinbase: ECRecover(?_館, m_館) = coinbase.
+// WIP-6 (isVCT=true): m_館 = Keccak256(VCT_MINE || sealHash || nonce).
+// Pre-WIP-6:          m_館 = Keccak256(VCT_MINE || chainId || sealHash || nonce).
 func (ecc *ECC) verifyMiningSig(header *types.Header, sealHash []byte, isVCT bool) error {
 	if len(header.VRFSignature) != 65 {
 		return fmt.Errorf("VCT: VRFSignature must be 65 bytes, got %d", len(header.VRFSignature))

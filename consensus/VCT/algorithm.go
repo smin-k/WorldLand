@@ -25,7 +25,7 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// ECC is the VCT consensus engine: ECCPoW (LDPC) + secp256k1 ECVRF sortition.
+// ECC is the VCT consensus engine: ECCPoW (LDPC) + secp256k1 ECVRF-based eligibility.
 type ECC struct {
 	config Config
 
@@ -125,9 +125,9 @@ type Mode uint
 const (
 	epochLength = 30000 // blocks per epoch for seed hash (DAG legacy)
 
-	// VRF sortition parameters
-	SortitionEpochLength  = 100 // blocks per sortition epoch
-	SortitionSeedLookback = 10  // blocks before epoch boundary for seed (fork resistance)
+	// VCT eligibility parameters
+	EligibilityEpochLength  = 100 // blocks per eligibility epoch
+	EligibilitySeedLookback = 10  // blocks before epoch boundary for seed (fork resistance)
 
 	ModeNormal Mode = iota
 	ModeShared
@@ -279,44 +279,44 @@ func (ecc *ECC) APIs(chain consensus.ChainHeaderReader) []rpc.API {
 	}
 }
 
-// ── Sortition helpers ─────────────────────────────────────────────────────────
+// -- Eligibility helpers -------------------------------------------------------
 
-// SortitionEpoch returns the sortition epoch for a given block number.
-func SortitionEpoch(blockNumber uint64) uint64 {
-	return blockNumber / SortitionEpochLength
+// EligibilityEpoch returns the eligibility epoch for a given block number.
+func EligibilityEpoch(blockNumber uint64) uint64 {
+	return blockNumber / EligibilityEpochLength
 }
 
-// SortitionEpochStartBlock returns the first block of an epoch.
-func SortitionEpochStartBlock(epoch uint64) uint64 {
-	return epoch * SortitionEpochLength
+// EligibilityEpochStartBlock returns the first block of an epoch.
+func EligibilityEpochStartBlock(epoch uint64) uint64 {
+	return epoch * EligibilityEpochLength
 }
 
-// GetSortitionSeedBlockNumber returns the block number whose hash is used as VRF input.
-// Uses SortitionSeedLookback before the epoch boundary to resist fork grinding.
-func GetSortitionSeedBlockNumber(blockNumber uint64) uint64 {
-	epoch := SortitionEpoch(blockNumber)
+// GetEligibilitySeedBlockNumber returns the block number whose hash is used as VRF input.
+// Uses EligibilitySeedLookback before the epoch boundary to resist fork grinding.
+func GetEligibilitySeedBlockNumber(blockNumber uint64) uint64 {
+	epoch := EligibilityEpoch(blockNumber)
 	if epoch == 0 {
 		return 0
 	}
-	epochStart := SortitionEpochStartBlock(epoch)
-	if epochStart > SortitionSeedLookback {
-		return epochStart - SortitionSeedLookback
+	epochStart := EligibilityEpochStartBlock(epoch)
+	if epochStart > EligibilitySeedLookback {
+		return epochStart - EligibilitySeedLookback
 	}
 	return 0
 }
 
-// GetSortitionSeedHash returns the block hash used as VRF message for sortition.
-func (ecc *ECC) GetSortitionSeedHash(chain consensus.ChainHeaderReader, blockNumber uint64) common.Hash {
-	seedBlockNum := GetSortitionSeedBlockNumber(blockNumber)
+// GetEligibilitySeedHash returns the block hash used as VRF message for eligibility.
+func (ecc *ECC) GetEligibilitySeedHash(chain consensus.ChainHeaderReader, blockNumber uint64) common.Hash {
+	seedBlockNum := GetEligibilitySeedBlockNumber(blockNumber)
 	header := chain.GetHeaderByNumber(seedBlockNum)
 	if header == nil {
-		log.Warn("VCT: sortition seed block unavailable", "needBlock", seedBlockNum, "forBlock", blockNumber)
+		log.Warn("VCT: eligibility seed block unavailable", "needBlock", seedBlockNum, "forBlock", blockNumber)
 		return common.Hash{}
 	}
 	return header.Hash()
 }
 
-// IsEligibleForBlock checks VRF sortition eligibility for blockNumber.
+// IsEligibleForBlock checks VCT eligibility for blockNumber.
 // parentHash is the ParentHash of the block being mined.
 // Returns (eligible, proofBytes, error).
 func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumber uint64, parentHash common.Hash, threshold *big.Int) (bool, []byte, error) {
@@ -336,9 +336,9 @@ func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumbe
 		}
 		msg = computeVRFMsg(chainIDBytes, parentHash.Bytes(), blockNumber)
 	} else {
-		seedHash := ecc.GetSortitionSeedHash(chain, blockNumber)
+		seedHash := ecc.GetEligibilitySeedHash(chain, blockNumber)
 		if seedHash == (common.Hash{}) {
-			return false, nil, errors.New("VCT: could not get sortition seed hash")
+			return false, nil, errors.New("VCT: could not get eligibility seed hash")
 		}
 		msg = seedHash.Bytes()
 	}
@@ -352,8 +352,8 @@ func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumbe
 	if err != nil {
 		return false, nil, fmt.Errorf("VCT: VRF output extraction failed: %w", err)
 	}
-	eligible := SortitionEligibleWithBase(output, threshold, 0)
-	log.Info("VCT sortition", "block", blockNumber, "epoch", SortitionEpoch(blockNumber), "threshold", threshold, "eligible", eligible)
+	eligible := EligibilityPassesWithBase(output, threshold, 0)
+	log.Info("VCT eligibility", "block", blockNumber, "epoch", EligibilityEpoch(blockNumber), "threshold", threshold, "eligible", eligible)
 	return eligible, proof, nil
 }
 
@@ -393,7 +393,7 @@ func (ecc *ECC) EnsureVRFKeys(coinbase common.Address) error {
 	if ecc.vrfCoinbase == coinbase && len(ecc.vrfSecKey) > 0 && len(ecc.vrfPubKey) > 0 {
 		return nil
 	}
-	return fmt.Errorf("VCT: account key not set for coinbase %s — unlock the account with --unlock before mining", coinbase.Hex())
+	return fmt.Errorf("VCT: account key not set for coinbase %s; unlock the account with --unlock before mining", coinbase.Hex())
 }
 
 // SetVRFKey sets an explicit secp256k1 private key (32 bytes) as the VRF key.
@@ -419,7 +419,7 @@ func (ecc *ECC) SetVRFKey(seckey []byte) error {
 	return nil
 }
 
-// ── Legacy LDPC mining helpers ────────────────────────────────────────────────
+// -- Legacy LDPC mining helpers ------------------------------------------------
 
 // Deprecated: this helper uses the legacy sealHash||nonce seed path and is not
 // part of the WIP-6 VCT mining pipeline. New VCT code must use mine/mine_seoul,

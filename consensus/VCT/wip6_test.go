@@ -11,6 +11,8 @@ import (
 
 	"github.com/cryptoecc/WorldLand/common"
 	"github.com/cryptoecc/WorldLand/consensus/eccpow"
+	"github.com/cryptoecc/WorldLand/core/rawdb"
+	"github.com/cryptoecc/WorldLand/core/state"
 	"github.com/cryptoecc/WorldLand/core/types"
 	"github.com/cryptoecc/WorldLand/crypto"
 	"github.com/cryptoecc/WorldLand/log"
@@ -21,6 +23,8 @@ import (
 type mockChainReader struct {
 	cfg     *params.ChainConfig
 	headers map[common.Hash]*types.Header
+	blocks  map[common.Hash]*types.Block
+	states  map[common.Hash]*state.StateDB
 }
 
 func (m *mockChainReader) Config() *params.ChainConfig  { return m.cfg }
@@ -40,12 +44,20 @@ func (m *mockChainReader) GetHeaderByHash(hash common.Hash) *types.Header {
 	return m.headers[hash]
 }
 func (m *mockChainReader) GetTd(hash common.Hash, number uint64) *big.Int { return nil }
+func (m *mockChainReader) GetBlock(hash common.Hash, number uint64) *types.Block {
+	return m.blocks[hash]
+}
+func (m *mockChainReader) StateAt(root common.Hash) (*state.StateDB, error) {
+	return m.states[root], nil
+}
 
 func TestWIP6MessageFormats(t *testing.T) {
 	chainID := make([]byte, 32)
 	parentHash := bytes.Repeat([]byte{0x11}, 32)
 	sealHash := bytes.Repeat([]byte{0x22}, 32)
-	sigma := bytes.Repeat([]byte{0x33}, 65)
+	var vrfOutput [32]byte
+	copy(vrfOutput[:], bytes.Repeat([]byte{0x33}, 32))
+	sigma := bytes.Repeat([]byte{0x44}, 65)
 	nonce := uint64(0x0102030405060708)
 	binary.BigEndian.PutUint64(chainID[24:], 10399)
 
@@ -60,20 +72,22 @@ func TestWIP6MessageFormats(t *testing.T) {
 		t.Fatalf("VRF message layout mismatch: %x", vrfMsg)
 	}
 
-	sigMsg := make([]byte, 48)
+	sigMsg := make([]byte, 80)
 	copy(sigMsg[:8], "VCT_MINE")
 	copy(sigMsg[8:40], sealHash)
-	binary.LittleEndian.PutUint64(sigMsg[40:48], nonce)
-	if got, want := computeMiningSigMsgVCT(sealHash, nonce), crypto.Keccak256(sigMsg); !bytes.Equal(got, want) {
+	copy(sigMsg[40:72], vrfOutput[:])
+	binary.LittleEndian.PutUint64(sigMsg[72:80], nonce)
+	if got, want := computeMiningSigMsgVCT(sealHash, vrfOutput, nonce), crypto.Keccak256(sigMsg); !bytes.Equal(got, want) {
 		t.Fatalf("mining sig msg mismatch: got %x want %x", got, want)
 	}
 
-	seedMsg := make([]byte, 50+len(sigma))
+	seedMsg := make([]byte, 82+len(sigma))
 	copy(seedMsg[:10], "VCT_ECCPOW")
 	copy(seedMsg[10:42], sealHash)
-	binary.LittleEndian.PutUint64(seedMsg[42:50], nonce)
-	copy(seedMsg[50:], sigma)
-	if got, want := computePowSeedVCT(sealHash, nonce, sigma), crypto.Keccak256(seedMsg); !bytes.Equal(got, want) {
+	copy(seedMsg[42:74], vrfOutput[:])
+	binary.LittleEndian.PutUint64(seedMsg[74:82], nonce)
+	copy(seedMsg[82:], sigma)
+	if got, want := computePowSeedVCT(sealHash, vrfOutput, nonce, sigma), crypto.Keccak256(seedMsg); !bytes.Equal(got, want) {
 		t.Fatalf("pow seed mismatch: got %x want %x", got, want)
 	}
 
@@ -82,6 +96,46 @@ func TestWIP6MessageFormats(t *testing.T) {
 	binary.LittleEndian.PutUint64(legacyMsg[32:40], nonce)
 	if got := computeLegacyPowSeed(sealHash, nonce); !bytes.Equal(got, legacyMsg) {
 		t.Fatalf("legacy pow seed mismatch: got %x want %x", got, legacyMsg)
+	}
+}
+
+func TestVCTPowSeedCommitsToVRFOutputAndPerTrialSignatureNotProof(t *testing.T) {
+	ecc := &ECC{config: Config{Log: log.Root()}, chainID: big.NewInt(10399)}
+	header := &types.Header{
+		ParentHash:           common.HexToHash("0x01"),
+		Coinbase:             common.HexToAddress("0x1234"),
+		Difficulty:           big.NewInt(65536),
+		Number:               big.NewInt(100),
+		GasLimit:             30000000,
+		Time:                 1700000000,
+		VRFPublicKey:         bytes.Repeat([]byte{0x02}, 33),
+		VRFProof:             bytes.Repeat([]byte{0x11}, 81),
+		VRFSignature:         bytes.Repeat([]byte{0x22}, 65),
+		EligibilityThreshold: new(big.Int).Set(EligibilityBase),
+	}
+	sealHash := ecc.SealHash(header)
+
+	proofMutated := types.CopyHeader(header)
+	proofMutated.VRFProof = bytes.Repeat([]byte{0x33}, 81)
+	if got := ecc.SealHash(proofMutated); got != sealHash {
+		t.Fatalf("proof bytes changed semantic seal hash: got %s want %s", got, sealHash)
+	}
+
+	var beta1, beta2 [32]byte
+	beta1[31] = 1
+	beta2[31] = 2
+	sigma1 := bytes.Repeat([]byte{0x55}, 65)
+	sigma2 := bytes.Repeat([]byte{0x66}, 65)
+	const nonce = uint64(7)
+	seed1 := computePowSeedVCT(sealHash.Bytes(), beta1, nonce, sigma1)
+	if got := computePowSeedVCT(ecc.SealHash(proofMutated).Bytes(), beta1, nonce, sigma1); !bytes.Equal(got, seed1) {
+		t.Fatal("proof mutation changed PoW seed")
+	}
+	if got := computePowSeedVCT(sealHash.Bytes(), beta2, nonce, sigma1); bytes.Equal(got, seed1) {
+		t.Fatal("distinct VRF outputs produced the same PoW seed")
+	}
+	if got := computePowSeedVCT(sealHash.Bytes(), beta1, nonce, sigma2); bytes.Equal(got, seed1) {
+		t.Fatal("distinct per-trial signatures produced the same PoW seed")
 	}
 }
 
@@ -109,8 +163,8 @@ func TestLegacySealHashMatchesECCPoW(t *testing.T) {
 func TestWIP6ProgressiveTimeoutEligibility(t *testing.T) {
 	var output [32]byte
 
-	if TimeoutEnd != 70 {
-		t.Fatalf("TimeoutEnd = %d, want 70", TimeoutEnd)
+	if TimeoutStart != 70 || TimeoutEnd != 100 {
+		t.Fatalf("timeout window = (%d,%d), want (70,100)", TimeoutStart, TimeoutEnd)
 	}
 
 	output[0] = 0x1f
@@ -134,6 +188,39 @@ func TestWIP6ProgressiveTimeoutEligibility(t *testing.T) {
 	output[0] = 0xff
 	if !EligibilityPasses(output, TimeoutEnd) {
 		t.Fatal("timeout end should accept all outputs")
+	}
+}
+
+func TestWIP6EligibilityThresholdUsesIntegerSecondSchedule(t *testing.T) {
+	window := TimeoutEnd - TimeoutStart
+	previous := new(big.Int).Set(EligibilityBase)
+	for second := TimeoutStart; second < TimeoutEnd; second++ {
+		threshold := EligibilityThresholdAt(EligibilityBase, second)
+		if threshold.Cmp(previous) < 0 {
+			t.Fatalf("threshold decreased at second %d", second)
+		}
+
+		// The returned value is the exact floor of the integer formulation:
+		// threshold^W <= base^(te-d) * denominator^(d-ts) < (threshold+1)^W.
+		elapsed := second - TimeoutStart
+		remaining := TimeoutEnd - second
+		radical := new(big.Int).Exp(EligibilityBase, new(big.Int).SetUint64(remaining), nil)
+		radical.Mul(radical, new(big.Int).Exp(EligibilityDenominator, new(big.Int).SetUint64(elapsed), nil))
+		if new(big.Int).Exp(threshold, new(big.Int).SetUint64(window), nil).Cmp(radical) > 0 {
+			t.Fatalf("threshold at second %d exceeds exact integer root", second)
+		}
+		next := new(big.Int).Add(threshold, big.NewInt(1))
+		if new(big.Int).Exp(next, new(big.Int).SetUint64(window), nil).Cmp(radical) <= 0 {
+			t.Fatalf("threshold at second %d is below exact floor root", second)
+		}
+		previous = threshold
+	}
+
+	if got := EligibilityThresholdAt(EligibilityBase, TimeoutStart); got.Cmp(EligibilityBase) != 0 {
+		t.Fatalf("threshold at timeout start = %v, want base %v", got, EligibilityBase)
+	}
+	if got := EligibilityThresholdAt(EligibilityBase, TimeoutEnd); got.Cmp(EligibilityThresholdMax) != 0 {
+		t.Fatalf("threshold at timeout end = %v, want max %v", got, EligibilityThresholdMax)
 	}
 }
 
@@ -195,7 +282,7 @@ func TestWIP6AdaptiveEligibilityThreshold(t *testing.T) {
 		t.Fatalf("threshold below EligibilityBase: got %v, base %v", threshold, EligibilityBase)
 	}
 	if diff := ecc.CalcDifficulty(chain, vctParent.Time+1, vctParent); diff.Cmp(vctParent.Difficulty) != 0 {
-		t.Fatalf("difficulty changed during threshold bootstrap: got %v want %v", diff, vctParent.Difficulty)
+		t.Fatalf("difficulty changed while timing signal was assigned to eligibility: got %v want %v", diff, vctParent.Difficulty)
 	}
 
 	slowDiff := ecc.CalcDifficulty(chain, vctParent.Time+uint64(BlockGenerationTime.Int64()*2), vctParent)
@@ -306,7 +393,12 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 	// 7. Per-nonce mining signature: sign with the same key, embed, then verify.
 	sealHash := ecc.SealHash(header).Bytes()
 	const nonce = uint64(0xCAFEBABE12345678)
-	sigma, err := crypto.Sign(computeMiningSigMsgVCT(sealHash, nonce), prv)
+	msg := computeVRFMsg(ecc.chainIDBytes(), header.ParentHash.Bytes(), header.Number.Uint64())
+	vrfOutput, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg)
+	if err != nil {
+		t.Fatalf("VRFVerify: %v", err)
+	}
+	sigma, err := crypto.Sign(computeMiningSigMsgVCT(sealHash, vrfOutput, nonce), prv)
 	if err != nil {
 		t.Fatalf("crypto.Sign: %v", err)
 	}
@@ -315,6 +407,19 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 
 	if err := ecc.verifyMiningSig(header, sealHash, true); err != nil {
 		t.Fatalf("verifyMiningSig: %v", err)
+	}
+
+	// Toggling the recovery bit and replacing s with N-s yields the standard
+	// ECDSA malleation. Consensus must reject this high-s representation so a
+	// published authorization cannot be turned into a second work seed.
+	malleated := types.CopyHeader(header)
+	malleated.VRFSignature = append([]byte(nil), header.VRFSignature...)
+	sValue := new(big.Int).SetBytes(malleated.VRFSignature[32:64])
+	sValue.Sub(crypto.S256().Params().N, sValue)
+	copy(malleated.VRFSignature[32:64], sValue.FillBytes(make([]byte, 32)))
+	malleated.VRFSignature[64] ^= 1
+	if err := ecc.verifyMiningSig(malleated, sealHash, true); err == nil {
+		t.Fatal("malleated high-s mining signature accepted")
 	}
 	t.Logf("VCT full pipeline OK: coinbase=%s VRFproof=%d bytes", coinbase.Hex(), len(proof))
 }
@@ -330,5 +435,104 @@ func TestWIP6MinEligibleBalanceAt(t *testing.T) {
 	}
 	if got := cfg.MinEligibleBalanceAt(big.NewInt(5)); got.Cmp(big.NewInt(3)) != 0 {
 		t.Fatalf("fork S0 = %v, want 3", got)
+	}
+}
+
+func TestWIP6ProposerEligibilityActivationBoundary(t *testing.T) {
+	const activation = uint64(10)
+	coinbase := common.HexToAddress("0x1234")
+	chain := &mockChainReader{
+		cfg: &params.ChainConfig{
+			VCTBlock: big.NewInt(int64(activation)),
+			Vct: &params.VctConfig{
+				MinEligibleBalance: big.NewInt(10),
+			},
+		},
+		headers: make(map[common.Hash]*types.Header),
+	}
+	statedb, err := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+	if err != nil {
+		t.Fatalf("state.New: %v", err)
+	}
+	ecc := New(Config{}, nil, false)
+
+	// The balance gate is not a consensus rule before VCTBlock.
+	preFork := &types.Header{Number: new(big.Int).SetUint64(activation - 1), Coinbase: coinbase}
+	if err := ecc.VerifyProposerEligibility(chain, preFork, nil, statedb); err != nil {
+		t.Fatalf("pre-fork proposer rejected: %v", err)
+	}
+
+	// It activates at VCTBlock itself, not one block later.
+	atFork := &types.Header{Number: new(big.Int).SetUint64(activation), Coinbase: coinbase}
+	if err := ecc.VerifyProposerEligibility(chain, atFork, nil, statedb); err == nil {
+		t.Fatal("underfunded proposer accepted at VCTBlock")
+	}
+
+	statedb.AddBalance(coinbase, big.NewInt(10))
+	if err := ecc.VerifyProposerEligibility(chain, atFork, nil, statedb); err != nil {
+		t.Fatalf("funded proposer rejected at VCTBlock: %v", err)
+	}
+}
+
+func TestWIP6PreForkVCTFieldsMustBeAbsent(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*types.Header)
+	}{
+		{"public key", func(h *types.Header) { h.VRFPublicKey = []byte{} }},
+		{"proof", func(h *types.Header) { h.VRFProof = []byte{} }},
+		{"signature", func(h *types.Header) { h.VRFSignature = []byte{} }},
+		{"threshold", func(h *types.Header) { h.EligibilityThreshold = new(big.Int) }},
+	}
+	if err := verifyPreVCTFields(&types.Header{}); err != nil {
+		t.Fatalf("absent VCT fields rejected: %v", err)
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			header := new(types.Header)
+			test.mutate(header)
+			if err := verifyPreVCTFields(header); err == nil {
+				t.Fatal("explicitly present pre-VCT field accepted")
+			}
+		})
+	}
+}
+
+func TestWIP6UncleEligibilityUsesOwnParentState(t *testing.T) {
+	const activation = uint64(10)
+	coinbase := common.HexToAddress("0x1234")
+	parentRoot := common.HexToHash("0x01")
+	parent := &types.Header{Number: new(big.Int).SetUint64(activation - 1), Root: parentRoot}
+	uncle := &types.Header{Number: new(big.Int).SetUint64(activation), Coinbase: coinbase}
+	parentState, err := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+	if err != nil {
+		t.Fatalf("state.New: %v", err)
+	}
+	chain := &mockChainReader{
+		cfg: &params.ChainConfig{
+			VCTBlock: big.NewInt(int64(activation)),
+			Vct: &params.VctConfig{
+				MinEligibleBalance: big.NewInt(10),
+			},
+		},
+		headers: make(map[common.Hash]*types.Header),
+		blocks:  make(map[common.Hash]*types.Block),
+		states:  map[common.Hash]*state.StateDB{parentRoot: parentState},
+	}
+	ecc := New(Config{}, nil, false)
+
+	if err := ecc.verifyUncleProposerEligibility(chain, uncle, parent); err == nil {
+		t.Fatal("underfunded VCT uncle accepted")
+	}
+	parentState.AddBalance(coinbase, big.NewInt(10))
+	if err := ecc.verifyUncleProposerEligibility(chain, uncle, parent); err != nil {
+		t.Fatalf("funded VCT uncle rejected: %v", err)
+	}
+
+	// The containing block may be post-fork, but a pre-fork uncle keeps legacy
+	// eligibility semantics and does not require an S0 balance.
+	legacyUncle := &types.Header{Number: new(big.Int).SetUint64(activation - 1), Coinbase: common.HexToAddress("0x9999")}
+	if err := ecc.verifyUncleProposerEligibility(chain, legacyUncle, parent); err != nil {
+		t.Fatalf("pre-fork uncle rejected by S0 gate: %v", err)
 	}
 }

@@ -25,7 +25,7 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-// ECC is the VCT consensus engine: ECCPoW (LDPC) + secp256k1 ECVRF-based eligibility.
+// ECC is the VCT consensus engine: ECCPoW (LDPC) + secp256k1-VRF-based eligibility.
 type ECC struct {
 	config Config
 
@@ -79,24 +79,33 @@ func computeMiningSigMsg(chainIDBytes, sealHash []byte, nonce uint64) []byte {
 	return crypto.Keccak256(msg)
 }
 
-// computeMiningSigMsgVCT returns Keccak256(VCT_MINE || sealHash || nonce_LE8).
-// WIP-6 formula: chainId removed since it is already committed in sealHash.
-func computeMiningSigMsgVCT(sealHash []byte, nonce uint64) []byte {
-	msg := make([]byte, 8+32+8)
+// computeMiningSigMsgVCT returns
+// Keccak256(VCT_MINE || sealHash || vrfOutput || nonce_LE8).
+// The verified VRF output binds each authorization to the eligibility result.
+func computeMiningSigMsgVCT(sealHash []byte, vrfOutput [32]byte, nonce uint64) []byte {
+	msg := make([]byte, 8+32+32+8)
 	copy(msg[:8], "VCT_MINE")
 	copy(msg[8:40], sealHash)
-	binary.LittleEndian.PutUint64(msg[40:48], nonce)
+	copy(msg[40:72], vrfOutput[:])
+	binary.LittleEndian.PutUint64(msg[72:80], nonce)
 	return crypto.Keccak256(msg)
 }
 
-// computePowSeedVCT returns Keccak256(VCT_ECCPOW || sealHash || nonce_LE8 || sigma).
-// WIP-6 formula: chainId removed since it is already committed in sealHash.
-func computePowSeedVCT(sealHash []byte, nonce uint64, sigma []byte) []byte {
-	raw := make([]byte, 10+32+8+len(sigma))
+// computePowSeedVCT returns
+// Keccak256(VCT_ECCPOW || sealHash || vrfOutput || nonce_LE8 || signature).
+//
+// The serialized VRF proof is excluded in favor of its unique semantic output.
+// The ECDSA signature is included deliberately so an external miner needs a
+// fresh account authorization before evaluating each (nonce, signature) work
+// trial. ECDSA signatures are not unique, so the consensus work trial is the
+// pair (nonce, signature), not the nonce alone.
+func computePowSeedVCT(sealHash []byte, vrfOutput [32]byte, nonce uint64, signature []byte) []byte {
+	raw := make([]byte, 10+32+32+8+len(signature))
 	copy(raw[:10], "VCT_ECCPOW")
 	copy(raw[10:42], sealHash)
-	binary.LittleEndian.PutUint64(raw[42:50], nonce)
-	copy(raw[50:], sigma)
+	copy(raw[42:74], vrfOutput[:])
+	binary.LittleEndian.PutUint64(raw[74:82], nonce)
+	copy(raw[82:], signature)
 	return crypto.Keccak256(raw)
 }
 
@@ -423,7 +432,8 @@ func (ecc *ECC) SetVRFKey(seckey []byte) error {
 
 // Deprecated: this helper uses the legacy sealHash||nonce seed path and is not
 // part of the WIP-6 VCT mining pipeline. New VCT code must use mine/mine_seoul,
-// which bind each ECCPoW trial to computePowSeedVCT and the per-nonce signature.
+// which bind each ECCPoW trial to the verified VRF output and a per-trial
+// account authorization signature.
 func RunOptimizedConcurrencyLDPC(header *types.Header, hash []byte) (bool, []int, []int, uint64, []byte) {
 	var (
 		LDPCNonce  uint64

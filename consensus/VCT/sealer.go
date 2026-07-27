@@ -233,6 +233,7 @@ func (ecc *ECC) mine(block *types.Block, id int, seed uint64, abort chan struct{
 	}
 
 	var prv *ecdsa.PrivateKey
+	var vrfOutput [32]byte
 	if isVCT {
 		ecc.lock.Lock()
 		seckey := make([]byte, len(ecc.vrfSecKey))
@@ -243,6 +244,11 @@ func (ecc *ECC) mine(block *types.Block, id int, seed uint64, abort chan struct{
 		prv, err = crypto.ToECDSA(seckey)
 		if err != nil {
 			log.Error("VCT: mine: invalid VRF key", "err", err)
+			return
+		}
+		vrfOutput, err = VRFOutputFromProof(header.VRFProof)
+		if err != nil {
+			log.Error("VCT: mine: cannot derive VRF output", "err", err)
 			return
 		}
 	}
@@ -277,15 +283,14 @@ search:
 				sigma  []byte
 			)
 			if isVCT {
-				sigHash := computeMiningSigMsgVCT(sealHash, nonce)
 				var serr error
-				sigma, serr = crypto.Sign(sigHash, prv)
+				sigma, serr = crypto.Sign(computeMiningSigMsgVCT(sealHash, vrfOutput, nonce), prv)
 				if serr != nil {
-					logger.Warn("VCT: mining sign failed", "err", serr)
+					logger.Warn("VCT: mining authorization sign failed", "err", serr)
 					nonce++
 					continue
 				}
-				powSeed := computePowSeedVCT(sealHash, nonce, sigma)
+				powSeed := computePowSeedVCT(sealHash, vrfOutput, nonce, sigma)
 				digest = crypto.Keccak512(powSeed)
 			} else {
 				powSeed := computeLegacyPowSeed(sealHash, nonce)
@@ -323,6 +328,7 @@ func (ecc *ECC) mine_seoul(block *types.Block, id int, seed uint64, abort chan s
 	}
 
 	var prv *ecdsa.PrivateKey
+	var vrfOutput [32]byte
 	if isVCT {
 		ecc.lock.Lock()
 		seckey := make([]byte, len(ecc.vrfSecKey))
@@ -333,6 +339,11 @@ func (ecc *ECC) mine_seoul(block *types.Block, id int, seed uint64, abort chan s
 		prv, err = crypto.ToECDSA(seckey)
 		if err != nil {
 			log.Error("VCT: mine_seoul: invalid VRF key", "err", err)
+			return
+		}
+		vrfOutput, err = VRFOutputFromProof(header.VRFProof)
+		if err != nil {
+			log.Error("VCT: mine_seoul: cannot derive VRF output", "err", err)
 			return
 		}
 	}
@@ -367,15 +378,14 @@ search:
 				sigma  []byte
 			)
 			if isVCT {
-				sigHash := computeMiningSigMsgVCT(sealHash, nonce)
 				var serr error
-				sigma, serr = crypto.Sign(sigHash, prv)
+				sigma, serr = crypto.Sign(computeMiningSigMsgVCT(sealHash, vrfOutput, nonce), prv)
 				if serr != nil {
-					logger.Warn("VCT: mining sign failed", "err", serr)
+					logger.Warn("VCT: mining authorization sign failed", "err", serr)
 					nonce++
 					continue
 				}
-				powSeed := computePowSeedVCT(sealHash, nonce, sigma)
+				powSeed := computePowSeedVCT(sealHash, vrfOutput, nonce, sigma)
 				digest = crypto.Keccak512(powSeed)
 			} else {
 				powSeed := computeLegacyPowSeed(sealHash, nonce)

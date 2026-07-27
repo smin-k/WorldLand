@@ -71,6 +71,17 @@ func New(ethone consensus.Engine) *Beacon {
 	return &Beacon{ethone: ethone}
 }
 
+// VerifyProposerEligibility forwards optional state-dependent proposer checks
+// to the wrapped execution-layer consensus engine. Blockchain insertion sees
+// the Beacon wrapper, so without this forwarding hook checks such as VCT's S0
+// balance gate would be skipped for imported blocks.
+func (beacon *Beacon) VerifyProposerEligibility(chain consensus.ChainHeaderReader, header, parent *types.Header, parentState *state.StateDB) error {
+	if verifier, ok := beacon.ethone.(consensus.ProposerVerifier); ok {
+		return verifier.VerifyProposerEligibility(chain, header, parent, parentState)
+	}
+	return nil
+}
+
 /*func New(ethone consensus.Engine, ethone consensus.Engine) *Beacon {
 	if _, ok := ethone.(*Beacon); ok {
 		panic("nested consensus engine")

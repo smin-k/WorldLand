@@ -1,15 +1,55 @@
 package beacon
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
 	"testing"
 
 	"github.com/cryptoecc/WorldLand/common"
 	"github.com/cryptoecc/WorldLand/consensus"
+	"github.com/cryptoecc/WorldLand/core/state"
 	"github.com/cryptoecc/WorldLand/core/types"
 	"github.com/cryptoecc/WorldLand/params"
 )
+
+type mockEngine struct {
+	consensus.Engine
+}
+
+type mockProposerEngine struct {
+	consensus.Engine
+	calls int
+	err   error
+}
+
+func (m *mockProposerEngine) VerifyProposerEligibility(chain consensus.ChainHeaderReader, header, parent *types.Header, parentState *state.StateDB) error {
+	m.calls++
+	return m.err
+}
+
+func TestVerifyProposerEligibilityForwarding(t *testing.T) {
+	wantErr := errors.New("proposer rejected")
+	underlying := &mockProposerEngine{err: wantErr}
+	wrapped := New(underlying)
+
+	if _, ok := interface{}(wrapped).(consensus.ProposerVerifier); !ok {
+		t.Fatal("Beacon does not expose consensus.ProposerVerifier")
+	}
+	if err := wrapped.VerifyProposerEligibility(nil, nil, nil, nil); !errors.Is(err, wantErr) {
+		t.Fatalf("forwarded error = %v, want %v", err, wantErr)
+	}
+	if underlying.calls != 1 {
+		t.Fatalf("underlying verifier called %d times, want 1", underlying.calls)
+	}
+}
+
+func TestVerifyProposerEligibilityWithoutUnderlyingVerifier(t *testing.T) {
+	wrapped := New(&mockEngine{})
+	if err := wrapped.VerifyProposerEligibility(nil, nil, nil, nil); err != nil {
+		t.Fatalf("non-verifier engine returned error: %v", err)
+	}
+}
 
 type mockChain struct {
 	config *params.ChainConfig

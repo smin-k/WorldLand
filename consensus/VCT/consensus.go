@@ -193,6 +193,43 @@ func (ecc *ECC) VerifyUncles(chain consensus.ChainReader, block *types.Block) er
 		if err := ecc.verifyHeader(chain, uncle, ancestors[uncle.ParentHash], true, true, time.Now().Unix()); err != nil {
 			return err
 		}
+		if err := ecc.verifyUncleProposerEligibility(chain, uncle, ancestors[uncle.ParentHash]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifyUncleProposerEligibility applies VCT's state-dependent S0 gate to an
+// uncle using the state committed by that uncle's own parent. Pre-VCT uncles
+// retain legacy behavior and do not require historical state access.
+func (ecc *ECC) verifyUncleProposerEligibility(chain consensus.ChainReader, uncle, parent *types.Header) error {
+	if !chain.Config().IsVCT(uncle.Number) {
+		return nil
+	}
+	stateChain, ok := chain.(consensus.ChainStateReader)
+	if !ok {
+		return errors.New("VCT: chain state reader required for uncle proposer eligibility")
+	}
+	parentState, err := stateChain.StateAt(parent.Root)
+	if err != nil {
+		return fmt.Errorf("VCT: uncle parent state unavailable: %w", err)
+	}
+	if parentState == nil {
+		return errors.New("VCT: uncle parent state unavailable")
+	}
+	if err := ecc.VerifyProposerEligibility(chain, uncle, parent, parentState); err != nil {
+		return fmt.Errorf("VCT: invalid uncle proposer: %w", err)
+	}
+	return nil
+}
+
+// verifyPreVCTFields rejects even explicitly empty VCT extension fields. Their
+// mere presence changes the full header hash while the legacy seal hash does
+// not commit to them, so all four fields must be absent before VCTBlock.
+func verifyPreVCTFields(header *types.Header) error {
+	if header.VRFPublicKey != nil || header.VRFProof != nil || header.VRFSignature != nil || header.EligibilityThreshold != nil {
+		return errors.New("invalid pre-VCT header: VCT extension fields must be absent")
 	}
 	return nil
 }
@@ -223,8 +260,8 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 		if header.EligibilityThreshold == nil || header.EligibilityThreshold.Cmp(expectThreshold) != 0 {
 			return fmt.Errorf("invalid vct eligibility threshold: have %v, want %v", header.EligibilityThreshold, expectThreshold)
 		}
-	} else if header.EligibilityThreshold != nil {
-		return fmt.Errorf("invalid pre-VCT eligibility threshold: have %v, want nil", header.EligibilityThreshold)
+	} else if err := verifyPreVCTFields(header); err != nil {
+		return err
 	}
 	if header.GasLimit > params.MaxGasLimit {
 		return fmt.Errorf("invalid gasLimit: have %v, max %v", header.GasLimit, params.MaxGasLimit)
@@ -246,10 +283,10 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 		return consensus.ErrInvalidNumber
 	}
 	if seal {
-		if err := ecc.verifySeal(chain, header); err != nil {
+		if err := ecc.verifyVRFProof(chain, header, parent); err != nil {
 			return err
 		}
-		if err := ecc.verifyVRFProof(chain, header, parent); err != nil {
+		if err := ecc.verifySeal(chain, header); err != nil {
 			return err
 		}
 		if isVCT {
@@ -307,12 +344,13 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 	}
 	deltaT := EffectiveDeltaT(rawDeltaT)
 
-	if _, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg); err != nil {
+	output, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg)
+	if err != nil {
 		return fmt.Errorf("VCT: VRF proof invalid: %w", err)
 	}
 
 	// WIP-6: time-dependent threshold (progressive timeout liveness guarantee).
-	if !CheckEligibilityWithBaseAndTime(header.VRFProof, header.EligibilityThreshold, deltaT) {
+	if !EligibilityPassesWithBase(output, header.EligibilityThreshold, deltaT) {
 		return fmt.Errorf("VCT: VRF proof does not pass eligibility threshold (raw deltaT=%d s, effective deltaT=%d s)", rawDeltaT, deltaT)
 	}
 
@@ -326,10 +364,9 @@ func (ecc *ECC) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, p
 		rawDiff := applyVCTMinimumDifficulty(ecc.calcBaseDifficulty(chain, time, parent))
 		threshold := ecc.CalcEligibilityThreshold(chain, time, parent)
 		if threshold.Cmp(EligibilityBase) > 0 {
-			// During bootstrap, spend difficulty-increase pressure on lowering
-			// the eligibility threshold first. If the threshold is already maxed
-			// out and blocks are still slow, probability cannot be raised further,
-			// so difficulty must be allowed to decrease for liveness.
+			// While admission has slack, spend the Annapurna timing signal on
+			// eligibility and keep difficulty fixed. At full eligibility, a
+			// remaining slow-block signal must lower difficulty for liveness.
 			if threshold.Cmp(EligibilityThresholdMax) >= 0 && rawDiff.Cmp(parent.Difficulty) < 0 {
 				return rawDiff
 			}
@@ -365,7 +402,9 @@ func (ecc *ECC) calcBaseDifficulty(chain consensus.ChainHeaderReader, time uint6
 // the child block of parent at the given timestamp. During bootstrap it starts
 // at 256 (all VRF outputs immediately eligible) and spends the difficulty
 // adjustment signal on lowering the threshold down to EligibilityBase before
-// allowing ECCPoW difficulty to move again.
+// allowing ECCPoW difficulty to move again. EligibilityBase is a lower bound,
+// not a set point that relaxed operation must return to after a permanent hash
+// power change.
 func (ecc *ECC) CalcEligibilityThreshold(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	next := new(big.Int).Add(parent.Number, big1)
 	if !chain.Config().IsVCT(next) {
@@ -391,8 +430,8 @@ func (ecc *ECC) CalcEligibilityThreshold(chain consensus.ChainHeaderReader, time
 	}
 
 	// If the parent itself required the full timeout window, relax the next
-	// block's base threshold. This is a conservative liveness response; the
-	// normal bootstrap rule will lower it again when blocks arrive quickly.
+	// block's base threshold. The same sensitivity-driven rule lowers it again
+	// only when subsequent blocks are faster than the controller target.
 	if chain.Config().IsVCT(parent.Number) && parent.Number.Sign() > 0 {
 		grandParent := chain.GetHeader(parent.ParentHash, parent.Number.Uint64()-1)
 		if grandParent != nil && parent.Time > grandParent.Time && EffectiveDeltaT(parent.Time-grandParent.Time) >= TimeoutEnd {
@@ -477,7 +516,12 @@ func (ecc *ECC) verifySeal(chain consensus.ChainHeaderReader, header *types.Head
 	}
 	var powSeed []byte
 	if isVCTBlock {
-		powSeed = computePowSeedVCT(sealHash, header.Nonce.Uint64(), header.VRFSignature)
+		msg := computeVRFMsg(ecc.chainIDBytes(), header.ParentHash.Bytes(), header.Number.Uint64())
+		vrfOutput, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg)
+		if err != nil {
+			return fmt.Errorf("VCT: cannot derive verified VRF output for PoW seed: %w", err)
+		}
+		powSeed = computePowSeedVCT(sealHash, vrfOutput, header.Nonce.Uint64(), header.VRFSignature)
 	} else {
 		powSeed = computeLegacyPowSeed(sealHash, header.Nonce.Uint64())
 	}
@@ -542,16 +586,18 @@ func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 	hasher.Write(ecc.chainIDBytes())
 	// Block template fields only. Excluded (all set during Seal/mining):
 	//   Nonce, MixDigest, Codeword - PoW outputs
-	//   VRFSignature               - per-nonce mining signature
+	//   VRFSignature               - per-trial mining authorization signature
 	//   CodeLength                 - derived from difficulty by mine_seoul and written back
-	// VRFPublicKey, VRFProof, and EligibilityThreshold are included because they
-	// select and prove the VRF eligibility gate.
+	// VRFPublicKey and EligibilityThreshold are included because they select the
+	// eligibility gate. VRFProof is deliberately excluded: valid proofs may be
+	// malleable, while computePowSeedVCT separately commits to the unique,
+	// verified VRF output.
 	enc := []interface{}{
 		header.ParentHash, header.UncleHash, header.Coinbase,
 		header.Root, header.TxHash, header.ReceiptHash,
 		header.Bloom, header.Difficulty, header.Number,
 		header.GasLimit, header.GasUsed, header.Time, header.Extra,
-		header.VRFPublicKey, header.VRFProof,
+		header.VRFPublicKey,
 		header.EligibilityThreshold,
 	}
 	if header.BaseFee != nil {
@@ -581,17 +627,28 @@ func legacySealHash(header *types.Header) (hash common.Hash) {
 	return hash
 }
 
-// verifyMiningSig checks that header.VRFSignature is a valid per-nonce mining
-// signature by the block's coinbase: ECRecover(?_館, m_館) = coinbase.
-// WIP-6 (isVCT=true): m_館 = Keccak256(VCT_MINE || sealHash || nonce).
-// Pre-WIP-6:          m_館 = Keccak256(VCT_MINE || chainId || sealHash || nonce).
+// verifyMiningSig checks that header.VRFSignature is a valid per-trial mining
+// signature by the block's coinbase account.
+// WIP-6:     m = Keccak256(VCT_MINE || sealHash || verifiedVRFOutput || nonce).
+// Pre-WIP-6: m = Keccak256(VCT_MINE || chainId || sealHash || nonce).
 func (ecc *ECC) verifyMiningSig(header *types.Header, sealHash []byte, isVCT bool) error {
 	if len(header.VRFSignature) != 65 {
 		return fmt.Errorf("VCT: VRFSignature must be 65 bytes, got %d", len(header.VRFSignature))
 	}
+	r := new(big.Int).SetBytes(header.VRFSignature[:32])
+	s := new(big.Int).SetBytes(header.VRFSignature[32:64])
+	v := header.VRFSignature[64]
+	if !crypto.ValidateSignatureValues(v, r, s, true) {
+		return errors.New("VCT: mining signature is not canonical low-s ECDSA")
+	}
 	var msgHash []byte
 	if isVCT {
-		msgHash = computeMiningSigMsgVCT(sealHash, header.Nonce.Uint64())
+		msg := computeVRFMsg(ecc.chainIDBytes(), header.ParentHash.Bytes(), header.Number.Uint64())
+		vrfOutput, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg)
+		if err != nil {
+			return fmt.Errorf("VCT: cannot derive verified VRF output for mining signature: %w", err)
+		}
+		msgHash = computeMiningSigMsgVCT(sealHash, vrfOutput, header.Nonce.Uint64())
 	} else {
 		msgHash = computeMiningSigMsg(ecc.chainIDBytes(), sealHash, header.Nonce.Uint64())
 	}

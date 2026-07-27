@@ -148,7 +148,8 @@ func TestWIP6VRFTestVector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantProof, err := hex.DecodeString("02c7026636565add26a1cf2ec857f77c407609ba8893a0dfae5218f87cea06d20e9139789ff96b5ff2996092b188a4605cb9043c9c1266c8447a7503ee9a1b3fe38c284f3ffd5dc2556294f6db60b6281a")
+	// This vector commits to the VCT-VRF-NONCE-v1 RFC 6979 algorithm tag.
+	wantProof, err := hex.DecodeString("02c7026636565add26a1cf2ec857f77c407609ba8893a0dfae5218f87cea06d20e9a4af7744f21e2f2d1e1b178a590bfea6d3a8a035f167015825a286e4a166c98b9a98d56df124782dad5fb42fc2ea1bb")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,6 +219,8 @@ func TestVRFTamperedProofRejected(t *testing.T) {
 		_, verr := VRFVerify(pubkey, tampered, msg)
 		if verr != nil {
 			rejected++
+		} else {
+			t.Fatalf("VRFVerify accepted proof with mutated byte %d", i)
 		}
 	}
 	if rejected == 0 {
@@ -227,6 +230,27 @@ func TestVRFTamperedProofRejected(t *testing.T) {
 		t.Logf("note: %d/81 byte positions were accepted after single-byte flip (expected 0)", 81-rejected)
 	}
 	t.Logf("tamper rejection: %d/81 byte positions correctly rejected", rejected)
+}
+
+func TestVRFRejectsInvalidPublicKeyEncodings(t *testing.T) {
+	seckey, pubkey := makeVRFKeypair(t)
+	msg := []byte("VCT_VRF|invalid-public-key")
+	proof, _, err := VRFProve(seckey, pubkey, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := [][]byte{
+		make([]byte, 32),
+		make([]byte, 33),
+		append([]byte{0x04}, make([]byte, 32)...),
+		append([]byte{0x02}, bytes.Repeat([]byte{0xff}, 32)...),
+	}
+	for i, candidate := range invalid {
+		if _, err := VRFVerify(candidate, proof, msg); err == nil {
+			t.Fatalf("VRFVerify accepted invalid public key encoding %d", i)
+		}
+	}
 }
 
 func TestVRFRejectsMalformedScalars(t *testing.T) {

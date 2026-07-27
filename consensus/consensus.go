@@ -58,6 +58,16 @@ type ChainReader interface {
 	GetBlock(hash common.Hash, number uint64) *types.Block
 }
 
+// ChainStateReader extends ChainReader with historical state access. Consensus
+// engines use this optional interface for state-dependent validation of uncle
+// headers against each uncle's own parent state.
+type ChainStateReader interface {
+	ChainReader
+
+	// StateAt returns a new mutable state based on a particular point in time.
+	StateAt(root common.Hash) (*state.StateDB, error)
+}
+
 // Engine is an algorithm agnostic consensus engine.
 type Engine interface {
 	// Author retrieves the Ethereum address of the account that minted the given

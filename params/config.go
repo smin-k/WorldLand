@@ -1050,6 +1050,25 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 	if isForkIncompatible(c.VCTBlock, newcfg.VCTBlock, head) {
 		return newCompatError("VCT fork block", c.VCTBlock, newcfg.VCTBlock)
 	}
+	if c.IsVCT(head) || newcfg.IsVCT(head) {
+		var storedVCT, newVCT VctConfig
+		if c.Vct != nil {
+			storedVCT = *c.Vct
+		}
+		if newcfg.Vct != nil {
+			newVCT = *newcfg.Vct
+		}
+		switch {
+		case !configNumEqualOrZero(storedVCT.MinEligibleBalance, newVCT.MinEligibleBalance):
+			return newVCTCompatError("VCT minimum eligible balance", storedVCT.MinEligibleBalance, newVCT.MinEligibleBalance, c.VCTBlock, newcfg.VCTBlock)
+		case !configNumEqualOrZero(storedVCT.InitialEligibilityThreshold, newVCT.InitialEligibilityThreshold):
+			return newVCTCompatError("VCT initial eligibility threshold", storedVCT.InitialEligibilityThreshold, newVCT.InitialEligibilityThreshold, c.VCTBlock, newcfg.VCTBlock)
+		case !configNumEqual(storedVCT.S0ForkBlock, newVCT.S0ForkBlock):
+			return newVCTCompatError("VCT S0 fork block", storedVCT.S0ForkBlock, newVCT.S0ForkBlock, c.VCTBlock, newcfg.VCTBlock)
+		case !configNumEqualOrZero(storedVCT.S0ForkBalance, newVCT.S0ForkBalance):
+			return newVCTCompatError("VCT S0 fork balance", storedVCT.S0ForkBalance, newVCT.S0ForkBalance, c.VCTBlock, newcfg.VCTBlock)
+		}
+	}
 
 	return nil
 }
@@ -1100,6 +1119,15 @@ func configNumEqual(x, y *big.Int) bool {
 	return x.Cmp(y) == 0
 }
 
+// configNumEqualOrZero treats nil and zero as the same disabled/default value.
+// VCT balance and initial-threshold fields deliberately share that semantic.
+func configNumEqualOrZero(x, y *big.Int) bool {
+	if x == nil || x.Sign() == 0 {
+		return y == nil || y.Sign() == 0
+	}
+	return y != nil && y.Sign() != 0 && x.Cmp(y) == 0
+}
+
 // ConfigCompatError is raised if the locally-stored blockchain is initialised with a
 // ChainConfig that would alter the past.
 type ConfigCompatError struct {
@@ -1123,6 +1151,18 @@ func newCompatError(what string, storedblock, newblock *big.Int) *ConfigCompatEr
 	err := &ConfigCompatError{what, storedblock, newblock, 0}
 	if rew != nil && rew.Sign() > 0 {
 		err.RewindTo = rew.Uint64() - 1
+	}
+	return err
+}
+
+func newVCTCompatError(what string, stored, new, storedFork, newFork *big.Int) *ConfigCompatError {
+	rewindFork := storedFork
+	if rewindFork == nil || (newFork != nil && newFork.Cmp(rewindFork) < 0) {
+		rewindFork = newFork
+	}
+	err := &ConfigCompatError{What: what, StoredConfig: stored, NewConfig: new}
+	if rewindFork != nil && rewindFork.Sign() > 0 {
+		err.RewindTo = rewindFork.Uint64() - 1
 	}
 	return err
 }

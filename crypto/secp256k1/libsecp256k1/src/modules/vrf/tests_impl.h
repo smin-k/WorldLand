@@ -56,7 +56,7 @@ void run_vrf_tests(void) {
 
     vrf_nonce_generation(gen_nonce, seckey, (unsigned char *)msg, msglen);
 
-    from_hex("A6E3C57DD01ABE90086538398355DD4C3B17AA873382B0F24D6129493D8AAD60", 64, exp_nonce);
+    from_hex("D4A4533AC6FA3AD771ADA12CF46ADCAA16783E88E9C821A2F33A1B496A343D84", 64, exp_nonce);
 
     print_hex("exp=", exp_nonce, 32);
     print_hex("gen=", gen_nonce, 32);

@@ -5,7 +5,6 @@ package vct
 
 import (
 	"errors"
-	"math"
 	"math/big"
 
 	secp256k1pkg "github.com/cryptoecc/WorldLand/crypto/secp256k1"
@@ -16,12 +15,12 @@ import (
 const (
 	// TimeoutStart is the elapsed delta-t (seconds) after which the eligibility
 	// threshold begins expanding beyond the base threshold.
-	TimeoutStart uint64 = 15
+	TimeoutStart uint64 = 70
 
 	// TimeoutEnd is the effective elapsed delta-t (seconds) at which all outputs
-	// are eligible. It is ceil(-10s * ln(0.001)), the 99.9% quantile of an
-	// exponential block-finding process with 10 second mean.
-	TimeoutEnd uint64 = 70
+	// are eligible. The 30-second expansion window is evaluated separately from
+	// the fixed 70-second start quantile.
+	TimeoutEnd uint64 = 100
 
 	// VCTFutureTolerance is subtracted from raw header delta-t before applying
 	// progressive timeout eligibility, so permitted future timestamps do not grant
@@ -88,27 +87,48 @@ func cloneThreshold(x *big.Int) *big.Int {
 	return new(big.Int).Set(x)
 }
 
-func thresholdProbability(threshold *big.Int) float64 {
-	t := cloneThreshold(threshold)
-	if t.Cmp(EligibilityThresholdMax) >= 0 {
-		return 1
-	}
-	r := new(big.Rat).SetFrac(t, EligibilityDenominator)
-	p, _ := r.Float64()
-	return p
-}
-
-func thresholdFromProbability(p float64) *big.Int {
-	if p >= 1 {
-		return new(big.Int).Set(EligibilityThresholdMax)
-	}
-	if p <= 0 {
+// integerNthRoot returns floor(value^(1/n)). It deliberately uses only
+// integer arithmetic: eligibility is consensus critical and must not depend on
+// a platform's floating-point exp/log implementation.
+func integerNthRoot(value *big.Int, n uint64) *big.Int {
+	if value.Sign() <= 0 || n == 0 {
 		return new(big.Int)
 	}
-	f := new(big.Float).SetPrec(320).SetMode(big.ToZero).SetFloat64(p)
-	f.Mul(f, new(big.Float).SetPrec(320).SetInt(EligibilityDenominator))
-	out, _ := f.Int(nil)
-	return out
+	if n == 1 {
+		return new(big.Int).Set(value)
+	}
+
+	// 2^ceil(bitlen/n) is an upper bound on the positive root. Starting above
+	// the root makes the integer Newton iteration monotonically decrease.
+	x := new(big.Int).Lsh(big.NewInt(1), uint((uint64(value.BitLen())+n-1)/n))
+	nBig := new(big.Int).SetUint64(n)
+	nMinusOne := new(big.Int).SetUint64(n - 1)
+	for {
+		xPow := new(big.Int).Exp(x, nMinusOne, nil)
+		quotient := new(big.Int).Quo(value, xPow)
+		next := new(big.Int).Mul(x, nMinusOne)
+		next.Add(next, quotient)
+		next.Quo(next, nBig)
+		if next.Cmp(x) >= 0 {
+			break
+		}
+		x = next
+	}
+
+	// Integer Newton can stop one integer above the floor near an exact
+	// boundary. Correct it explicitly so all implementations return the same
+	// threshold.
+	for new(big.Int).Exp(x, nBig, nil).Cmp(value) > 0 {
+		x.Sub(x, big.NewInt(1))
+	}
+	for {
+		next := new(big.Int).Add(x, big.NewInt(1))
+		if new(big.Int).Exp(next, nBig, nil).Cmp(value) > 0 {
+			break
+		}
+		x = next
+	}
+	return x
 }
 
 // ConfigEligibilityThreshold converts a config value into the consensus threshold.
@@ -142,12 +162,21 @@ func EligibilityThresholdAt(baseThreshold *big.Int, deltaT uint64) *big.Int {
 	if deltaT >= TimeoutEnd {
 		return new(big.Int).Set(EligibilityThresholdMax)
 	}
-	p0 := thresholdProbability(base)
-	ts := float64(TimeoutStart)
-	te := float64(TimeoutEnd)
-	tau := (te - ts) / math.Log(1.0/p0)
-	p := p0 * math.Exp(float64(deltaT-TimeoutStart)/tau)
-	threshold := thresholdFromProbability(p)
+	// At integer second d, preserve the exponential schedule exactly in its
+	// algebraic integer form:
+	//
+	//   threshold(d)^W = base^(TimeoutEnd-d) * 2^256^(d-TimeoutStart),
+	//   W = TimeoutEnd-TimeoutStart.
+	//
+	// The floor W-th root is deterministic. No float conversion, logarithm, or
+	// exponential is evaluated by a consensus participant.
+	window := TimeoutEnd - TimeoutStart
+	elapsed := deltaT - TimeoutStart
+	remaining := TimeoutEnd - deltaT
+	basePower := new(big.Int).Exp(base, new(big.Int).SetUint64(remaining), nil)
+	denominatorPower := new(big.Int).Exp(EligibilityDenominator, new(big.Int).SetUint64(elapsed), nil)
+	radical := new(big.Int).Mul(basePower, denominatorPower)
+	threshold := integerNthRoot(radical, window)
 	if threshold.Cmp(base) < 0 {
 		return base
 	}
@@ -215,24 +244,13 @@ func EligibilitySubmitDelayWithBase(output [32]byte, baseThreshold *big.Int) uin
 	if base.Cmp(EligibilityThresholdMax) >= 0 || new(big.Int).SetBytes(output[:]).Cmp(base) < 0 {
 		return 0
 	}
-	next := new(big.Int).SetBytes(output[:])
-	next.Add(next, big.NewInt(1))
-	qRat := new(big.Rat).SetFrac(next, EligibilityDenominator)
-	q, _ := qRat.Float64()
-	p0 := thresholdProbability(base)
-	ts := float64(TimeoutStart)
-	te := float64(TimeoutEnd)
-	tau := (te - ts) / math.Log(1.0/p0)
-	delay := ts + tau*math.Log(q/p0)
-	if delay >= te {
-		return TimeoutEnd
+	// Header timestamps and timeout parameters are integer seconds. Searching
+	// the bounded window is both exact and cheap (30 steps with current values),
+	// and keeps the local scheduling path identical to consensus verification.
+	for out := TimeoutStart; out < TimeoutEnd; out++ {
+		if EligibilityPassesWithBase(output, base, out) {
+			return out
+		}
 	}
-	out := uint64(math.Ceil(delay))
-	if out < TimeoutStart {
-		out = TimeoutStart
-	}
-	for out < TimeoutEnd && !EligibilityPassesWithBase(output, base, out) {
-		out++
-	}
-	return out
+	return TimeoutEnd
 }

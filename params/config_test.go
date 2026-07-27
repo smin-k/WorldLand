@@ -96,3 +96,27 @@ func TestCheckCompatible(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckCompatibleRejectsVCTConsensusParameterMismatch(t *testing.T) {
+	stored := &ChainConfig{
+		VCTBlock: big.NewInt(100),
+		Vct: &VctConfig{
+			MinEligibleBalance:          big.NewInt(100),
+			InitialEligibilityThreshold: big.NewInt(32),
+		},
+	}
+	updated := &ChainConfig{
+		VCTBlock: big.NewInt(100),
+		Vct: &VctConfig{
+			MinEligibleBalance:          big.NewInt(200),
+			InitialEligibilityThreshold: big.NewInt(32),
+		},
+	}
+	if err := stored.CheckCompatible(updated, 99); err != nil {
+		t.Fatalf("future VCT parameter mismatch rejected before activation: %v", err)
+	}
+	err := stored.CheckCompatible(updated, 100)
+	if err == nil || err.What != "VCT minimum eligible balance" || err.RewindTo != 99 {
+		t.Fatalf("VCT parameter mismatch not rejected at activation: %v", err)
+	}
+}

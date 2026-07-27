@@ -6,6 +6,16 @@
 
 #define VRF_SUITE 0xFE  /* for compatibility with witnet/vrf-rs */
 
+/*
+ * Domain-separate deterministic VRF proof nonces from ECDSA nonces that use
+ * the same secp256k1 account key. nonce_function_rfc6979 consumes exactly
+ * 16 bytes from algo16; this tag is consensus-critical.
+ */
+static const unsigned char VRF_NONCE_ALGO16[16] = {
+  'V', 'C', 'T', '-', 'V', 'R', 'F', '-',
+  'N', 'O', 'N', 'C', 'E', '-', 'v', '1'
+};
+
 #define memzero(ptr,size) memset(ptr,0,size);
 
 #define VRF_DEBUG_PRINT(X)
@@ -321,7 +331,7 @@ static void vrf_nonce_generation(unsigned char nonce32[32], const unsigned char 
   sha256(msg32, msg, msglen);
   while (1) {
       secp256k1_scalar non;
-      int ret = nonce_function_rfc6979(nonce32, msg32, seckey, NULL, NULL, count);
+      int ret = nonce_function_rfc6979(nonce32, msg32, seckey, VRF_NONCE_ALGO16, NULL, count);
       if (!ret) {
           secp256k1_scalar_clear(&non);
           break;

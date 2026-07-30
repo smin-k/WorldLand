@@ -68,22 +68,28 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 			return fmt.Errorf("VCT: VRF key error: %w", err)
 		}
 
-		// S0: reject mining early if the coinbase balance is below the minimum
-		// eligibility threshold. blockchain.go enforces this on insertion too, but
-		// checking here avoids wasting ECCPoW work on a block that will be rejected.
+		// Convert the parent-state balance to the virtual VRF trial weight.
+		// blockchain.go enforces the same rule on insertion.
+		trialWeight := new(big.Int).Set(big1)
 		if vctCfg := chain.Config().Vct; vctCfg != nil {
-			if s0 := vctCfg.MinEligibleBalanceAt(header.Number); s0.Sign() > 0 {
-				if sb, ok := chain.(stateBackend); ok {
-					if ph := chain.GetHeaderByHash(header.ParentHash); ph != nil {
-						if pstate, serr := sb.StateAt(ph.Root); serr == nil {
-							if bal := pstate.GetBalance(coinbase); bal.Cmp(s0) < 0 {
-								return fmt.Errorf("VCT: coinbase %s balance %s wei < S0 %s wei, not mining block %d",
-									coinbase.Hex(), bal.String(), s0.String(), blockNumber)
-							}
-						} else {
-							log.Warn("VCT: S0 check skipped: parent state unavailable", "block", blockNumber, "err", serr)
-						}
-					}
+			if b0 := vctCfg.MinEligibleBalanceAt(header.Number); b0.Sign() > 0 {
+				sb, ok := chain.(stateBackend)
+				if !ok {
+					return fmt.Errorf("VCT: parent-state backend unavailable for balance-weighted eligibility at block %d", blockNumber)
+				}
+				ph := chain.GetHeaderByHash(header.ParentHash)
+				if ph == nil {
+					return fmt.Errorf("VCT: parent header unavailable for balance-weighted eligibility at block %d", blockNumber)
+				}
+				pstate, serr := sb.StateAt(ph.Root)
+				if serr != nil {
+					return fmt.Errorf("VCT: parent state unavailable for balance-weighted eligibility at block %d: %w", blockNumber, serr)
+				}
+				bal := pstate.GetBalance(coinbase)
+				trialWeight.Div(new(big.Int).Set(bal), b0)
+				if trialWeight.Sign() == 0 {
+					return fmt.Errorf("VCT: coinbase %s balance %s wei grants zero virtual trials at B0 %s wei, not mining block %d",
+						coinbase.Hex(), bal.String(), b0.String(), blockNumber)
 				}
 			}
 		}
@@ -94,18 +100,19 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		}
 
 		// VCT phase (Rokis+): VRF eligibility gates who may propose each block.
-		eligible, proof, err := ecc.IsEligibleForBlock(chain, blockNumber, block.Header().ParentHash, header.EligibilityThreshold)
+		_, proof, err := ecc.IsEligibleForBlock(chain, blockNumber, block.Header().ParentHash, header.EligibilityThreshold)
 		if err != nil {
 			return fmt.Errorf("VCT: eligibility check failed: %w", err)
 		}
+		output, err := VRFOutputFromProof(proof)
+		if err != nil {
+			return fmt.Errorf("VCT: cannot extract VRF output: %w", err)
+		}
+		eligible := EligibilityPassesWithWeight(output, header.EligibilityThreshold, 0, trialWeight)
 
 		if !eligible {
 			// WIP-6 progressive timeout: wait until deltaT expands the threshold enough.
-			output, oerr := VRFOutputFromProof(proof)
-			if oerr != nil {
-				return fmt.Errorf("VCT: cannot extract VRF output: %w", oerr)
-			}
-			delay := EligibilitySubmitDelayWithBase(output, header.EligibilityThreshold)
+			delay := EligibilitySubmitDelayWithWeight(output, header.EligibilityThreshold, trialWeight)
 
 			parentHeader := chain.GetHeaderByHash(header.ParentHash)
 			var parentTime uint64
@@ -114,7 +121,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 			}
 			submitAt := parentTime + delay + VCTFutureTolerance
 			log.Info("VCT: not immediately eligible; waiting for progressive timeout",
-				"block", blockNumber, "delay_s", delay, "submitAt", submitAt)
+				"block", blockNumber, "virtualTrials", trialWeight, "delay_s", delay, "submitAt", submitAt)
 
 			deadline := time.Unix(int64(submitAt), 0)
 			if waitDur := time.Until(deadline); waitDur > 0 {
@@ -142,7 +149,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 			log.Info("VCT: progressive timeout elapsed, proceeding with mining",
 				"block", blockNumber, "timestamp", header.Time, "difficulty", header.Difficulty, "threshold", header.EligibilityThreshold)
 		} else {
-			log.Info("VCT: eligible to mine", "block", blockNumber, "epoch", EligibilityEpoch(blockNumber), "threshold", header.EligibilityThreshold)
+			log.Info("VCT: eligible to mine", "block", blockNumber, "virtualTrials", trialWeight, "threshold", header.EligibilityThreshold)
 		}
 
 		// Embed VRF proof + public key in the header.

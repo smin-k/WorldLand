@@ -637,20 +637,22 @@ type EccpowConfig struct{}
 
 // VctConfig is the consensus engine config for the VCT (WIP-6) network.
 type VctConfig struct {
-	// MinEligibleBalance is S0 (in wei): minimum parent-state balance required for a proposer.
-	// nil or zero means no restriction.
+	// MinEligibleBalance is retained as the wire-compatible name for B0 (in
+	// wei), the parent-state balance that grants one virtual VRF trial.
+	// floor(balance/B0) determines the trial weight; nil or zero disables
+	// balance weighting and uses weight one.
 	MinEligibleBalance *big.Int `json:"minEligibleBalance,omitempty"`
 	// InitialEligibilityThreshold is the base VRF uint256 threshold used for the
 	// first VCT block. Values 1..256 are accepted as legacy byte-scale
 	// probabilities and converted by the VCT engine; nil or zero defaults to 2^256.
 	InitialEligibilityThreshold *big.Int `json:"initialEligibilityThreshold,omitempty"`
-	// S0ForkBlock is the block number where MinEligibleBalance changes to S0ForkBalance.
+	// S0ForkBlock is the block number where the B0 balance unit changes.
 	S0ForkBlock *big.Int `json:"s0ForkBlock,omitempty"`
-	// S0ForkBalance is the new S0 value applied at and after S0ForkBlock.
+	// S0ForkBalance is the new B0 value applied at and after S0ForkBlock.
 	S0ForkBalance *big.Int `json:"s0ForkBalance,omitempty"`
 }
 
-// MinEligibleBalanceAt returns the S0 value applicable at the given block number.
+// MinEligibleBalanceAt returns the wire-compatible B0 value at blockNum.
 func (c *VctConfig) MinEligibleBalanceAt(blockNum *big.Int) *big.Int {
 	if c == nil || c.MinEligibleBalance == nil {
 		return new(big.Int)

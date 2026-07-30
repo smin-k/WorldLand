@@ -183,6 +183,75 @@ func EligibilityThresholdAt(baseThreshold *big.Int, deltaT uint64) *big.Int {
 	return threshold
 }
 
+// BalanceWeightedThreshold converts a unit-trial uint256 threshold into the
+// threshold for virtual trial weight w=floor(balance/B0). The fixed-point
+// exponentiation is consensus deterministic and logarithmic in w. Ceil
+// division keeps the admitted set no larger than the ideal real-valued
+// probability 1-(1-p)^w.
+func BalanceWeightedThreshold(unitThreshold, weight *big.Int) *big.Int {
+	if weight == nil || weight.Sign() <= 0 {
+		return new(big.Int)
+	}
+	unit := cloneThreshold(unitThreshold)
+	if weight.Cmp(big1) == 0 || unit.Sign() == 0 {
+		return unit
+	}
+	if unit.Cmp(EligibilityThresholdMax) >= 0 {
+		return new(big.Int).Set(EligibilityThresholdMax)
+	}
+	failure := new(big.Int).Sub(EligibilityDenominator, unit)
+	failurePower := fixedPointPowCeil(failure, weight)
+	return new(big.Int).Sub(EligibilityDenominator, failurePower)
+}
+
+func fixedPointMulCeil(x, y *big.Int) *big.Int {
+	product := new(big.Int).Mul(x, y)
+	product.Add(product, new(big.Int).Sub(EligibilityDenominator, big1))
+	return product.Div(product, EligibilityDenominator)
+}
+
+func fixedPointPowCeil(base, exponent *big.Int) *big.Int {
+	result := new(big.Int).Set(EligibilityDenominator)
+	factor := new(big.Int).Set(base)
+	remaining := new(big.Int).Set(exponent)
+	for remaining.Sign() > 0 {
+		if remaining.Bit(0) == 1 {
+			result = fixedPointMulCeil(result, factor)
+		}
+		remaining.Rsh(remaining, 1)
+		if remaining.Sign() > 0 {
+			factor = fixedPointMulCeil(factor, factor)
+		}
+	}
+	return result
+}
+
+// EligibilityPassesWithWeight applies progressive timeout to the unit-trial
+// threshold, then derives the account threshold from its parent-state balance
+// weight.
+func EligibilityPassesWithWeight(output [32]byte, baseThreshold *big.Int, deltaT uint64, weight *big.Int) bool {
+	if deltaT >= TimeoutEnd {
+		return true
+	}
+	unitThreshold := EligibilityThresholdAt(baseThreshold, deltaT)
+	threshold := BalanceWeightedThreshold(unitThreshold, weight)
+	return threshold.Sign() > 0 && new(big.Int).SetBytes(output[:]).Cmp(threshold) < 0
+}
+
+// EligibilitySubmitDelayWithWeight returns the first integer second at which
+// the balance-weighted account is admitted.
+func EligibilitySubmitDelayWithWeight(output [32]byte, baseThreshold, weight *big.Int) uint64 {
+	if EligibilityPassesWithWeight(output, baseThreshold, 0, weight) {
+		return 0
+	}
+	for out := TimeoutStart; out < TimeoutEnd; out++ {
+		if EligibilityPassesWithWeight(output, baseThreshold, out, weight) {
+			return out
+		}
+	}
+	return TimeoutEnd
+}
+
 // EffectiveDeltaT returns the elapsed time used by progressive timeout
 // eligibility after discounting the consensus future-timestamp allowance.
 func EffectiveDeltaT(rawDeltaT uint64) uint64 {

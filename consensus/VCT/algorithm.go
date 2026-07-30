@@ -134,7 +134,8 @@ type Mode uint
 const (
 	epochLength = 30000 // blocks per epoch for seed hash (DAG legacy)
 
-	// VCT eligibility parameters
+	// Legacy pre-VCT eligibility parameters. The active VCT protocol is
+	// parent-bound and does not use eligibility epochs.
 	EligibilityEpochLength  = 100 // blocks per eligibility epoch
 	EligibilitySeedLookback = 10  // blocks before epoch boundary for seed (fork resistance)
 
@@ -290,18 +291,17 @@ func (ecc *ECC) APIs(chain consensus.ChainHeaderReader) []rpc.API {
 
 // -- Eligibility helpers -------------------------------------------------------
 
-// EligibilityEpoch returns the eligibility epoch for a given block number.
+// EligibilityEpoch returns the legacy pre-VCT eligibility epoch for a block.
 func EligibilityEpoch(blockNumber uint64) uint64 {
 	return blockNumber / EligibilityEpochLength
 }
 
-// EligibilityEpochStartBlock returns the first block of an epoch.
+// EligibilityEpochStartBlock returns the first block of a legacy epoch.
 func EligibilityEpochStartBlock(epoch uint64) uint64 {
 	return epoch * EligibilityEpochLength
 }
 
-// GetEligibilitySeedBlockNumber returns the block number whose hash is used as VRF input.
-// Uses EligibilitySeedLookback before the epoch boundary to resist fork grinding.
+// GetEligibilitySeedBlockNumber returns the legacy pre-VCT VRF seed block.
 func GetEligibilitySeedBlockNumber(blockNumber uint64) uint64 {
 	epoch := EligibilityEpoch(blockNumber)
 	if epoch == 0 {
@@ -314,7 +314,7 @@ func GetEligibilitySeedBlockNumber(blockNumber uint64) uint64 {
 	return 0
 }
 
-// GetEligibilitySeedHash returns the block hash used as VRF message for eligibility.
+// GetEligibilitySeedHash returns the legacy pre-VCT VRF seed hash.
 func (ecc *ECC) GetEligibilitySeedHash(chain consensus.ChainHeaderReader, blockNumber uint64) common.Hash {
 	seedBlockNum := GetEligibilitySeedBlockNumber(blockNumber)
 	header := chain.GetHeaderByNumber(seedBlockNum)
@@ -362,13 +362,13 @@ func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumbe
 		return false, nil, fmt.Errorf("VCT: VRF output extraction failed: %w", err)
 	}
 	eligible := EligibilityPassesWithBase(output, threshold, 0)
-	log.Info("VCT eligibility", "block", blockNumber, "epoch", EligibilityEpoch(blockNumber), "threshold", threshold, "eligible", eligible)
+	log.Info("VCT eligibility", "block", blockNumber, "threshold", threshold, "eligible", eligible)
 	return eligible, proof, nil
 }
 
-// VerifyProposerEligibility implements consensus.ProposerVerifier.
-// It enforces WIP-6 S0 after VCTBlock: the proposer's balance at parent state
-// must meet the configured minimum.
+// VerifyProposerEligibility implements consensus.ProposerVerifier. The
+// wire-compatible S0 configuration is interpreted as B0: every complete B0
+// units in the parent-state balance grant one virtual VRF trial.
 func (ecc *ECC) VerifyProposerEligibility(chain consensus.ChainHeaderReader, header, parent *types.Header, parentState *state.StateDB) error {
 	if !chain.Config().IsVCT(header.Number) {
 		return nil
@@ -378,16 +378,32 @@ func (ecc *ECC) VerifyProposerEligibility(chain consensus.ChainHeaderReader, hea
 		return nil
 	}
 	if parentState == nil {
-		return errors.New("VCT: parent state required for S0 proposer eligibility")
+		return errors.New("VCT: parent state required for balance-weighted proposer eligibility")
 	}
-	s0 := vctCfg.MinEligibleBalanceAt(header.Number)
-	if s0.Sign() == 0 {
+	b0 := vctCfg.MinEligibleBalanceAt(header.Number)
+	if b0.Sign() == 0 {
 		return nil
 	}
 	balance := parentState.GetBalance(header.Coinbase)
-	if balance.Cmp(s0) < 0 {
-		return fmt.Errorf("VCT: proposer %s balance %s wei < S0 %s wei at block %d",
-			header.Coinbase.Hex(), balance.String(), s0.String(), header.Number.Uint64())
+	weight := new(big.Int).Div(new(big.Int).Set(balance), b0)
+	if weight.Sign() == 0 {
+		return fmt.Errorf("VCT: proposer %s balance %s wei grants zero virtual trials at B0 %s wei for block %d",
+			header.Coinbase.Hex(), balance.String(), b0.String(), header.Number.Uint64())
+	}
+	// Header verification authenticates the proof and its account binding. The
+	// stateful insertion path adds the balance-derived threshold check here.
+	if parent != nil && len(header.VRFProof) > 0 {
+		output, err := VRFOutputFromProof(header.VRFProof)
+		if err != nil {
+			return fmt.Errorf("VCT: cannot derive balance-weighted VRF output: %w", err)
+		}
+		var rawDeltaT uint64
+		if header.Time > parent.Time {
+			rawDeltaT = header.Time - parent.Time
+		}
+		if !EligibilityPassesWithWeight(output, header.EligibilityThreshold, EffectiveDeltaT(rawDeltaT), weight) {
+			return fmt.Errorf("VCT: VRF proof does not pass balance-weighted threshold (weight=%s)", weight)
+		}
 	}
 	return nil
 }

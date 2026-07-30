@@ -349,12 +349,10 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 		return fmt.Errorf("VCT: VRF proof invalid: %w", err)
 	}
 
-	// WIP-6: time-dependent threshold (progressive timeout liveness guarantee).
-	if !EligibilityPassesWithBase(output, header.EligibilityThreshold, deltaT) {
-		return fmt.Errorf("VCT: VRF proof does not pass eligibility threshold (raw deltaT=%d s, effective deltaT=%d s)", rawDeltaT, deltaT)
-	}
-
-	log.Debug("VCT: VRF proof verified", "block", blockNumber, "epoch", EligibilityEpoch(blockNumber), "rawDeltaT", rawDeltaT, "effectiveDeltaT", deltaT)
+	// Eligibility itself is checked by VerifyProposerEligibility, which has
+	// access to the parent state and can derive the balance trial weight.
+	_ = output
+	log.Debug("VCT: VRF proof verified; balance threshold deferred to stateful verification", "block", blockNumber, "rawDeltaT", rawDeltaT, "effectiveDeltaT", deltaT)
 	return nil
 }
 

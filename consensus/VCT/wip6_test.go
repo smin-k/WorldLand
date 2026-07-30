@@ -71,6 +71,13 @@ func TestWIP6MessageFormats(t *testing.T) {
 		binary.BigEndian.Uint64(vrfMsg[71:79]) != 42 {
 		t.Fatalf("VRF message layout mismatch: %x", vrfMsg)
 	}
+	otherParent := bytes.Repeat([]byte{0x12}, 32)
+	if bytes.Equal(vrfMsg, computeVRFMsg(chainID, otherParent, 42)) {
+		t.Fatal("VRF message is reusable across competing parent forks")
+	}
+	if bytes.Equal(vrfMsg, computeVRFMsg(chainID, parentHash, 43)) {
+		t.Fatal("VRF message is reusable across block heights")
+	}
 
 	sigMsg := make([]byte, 80)
 	copy(sigMsg[:8], "VCT_MINE")
@@ -221,6 +228,33 @@ func TestWIP6EligibilityThresholdUsesIntegerSecondSchedule(t *testing.T) {
 	}
 	if got := EligibilityThresholdAt(EligibilityBase, TimeoutEnd); got.Cmp(EligibilityThresholdMax) != 0 {
 		t.Fatalf("threshold at timeout end = %v, want max %v", got, EligibilityThresholdMax)
+	}
+}
+
+func TestWIP6BalanceWeightedVirtualTrials(t *testing.T) {
+	one := BalanceWeightedThreshold(EligibilityBase, big.NewInt(1))
+	four := BalanceWeightedThreshold(EligibilityBase, big.NewInt(4))
+	ten := BalanceWeightedThreshold(EligibilityBase, big.NewInt(10))
+	if one.Cmp(EligibilityBase) != 0 {
+		t.Fatalf("weight-one threshold = %v, want %v", one, EligibilityBase)
+	}
+	if !(four.Cmp(one) > 0 && ten.Cmp(four) > 0) {
+		t.Fatalf("weighted thresholds are not strictly increasing: one=%v four=%v ten=%v", one, four, ten)
+	}
+	if got := BalanceWeightedThreshold(EligibilityBase, new(big.Int)); got.Sign() != 0 {
+		t.Fatalf("zero weight threshold = %v, want zero", got)
+	}
+
+	var output [32]byte
+	EligibilityBase.FillBytes(output[:])
+	if EligibilityPassesWithWeight(output, EligibilityBase, 0, big.NewInt(1)) {
+		t.Fatal("weight one accepted output exactly at the unit threshold")
+	}
+	if !EligibilityPassesWithWeight(output, EligibilityBase, 0, big.NewInt(4)) {
+		t.Fatal("weight four did not accept output below its weighted threshold")
+	}
+	if delay4, delay1 := EligibilitySubmitDelayWithWeight(output, EligibilityBase, big.NewInt(4)), EligibilitySubmitDelayWithWeight(output, EligibilityBase, big.NewInt(1)); delay4 >= delay1 {
+		t.Fatalf("weight four delay %d is not below weight one delay %d", delay4, delay1)
 	}
 }
 
@@ -456,7 +490,7 @@ func TestWIP6ProposerEligibilityActivationBoundary(t *testing.T) {
 	}
 	ecc := New(Config{}, nil, false)
 
-	// The balance gate is not a consensus rule before VCTBlock.
+	// Balance-weighted eligibility is not a consensus rule before VCTBlock.
 	preFork := &types.Header{Number: new(big.Int).SetUint64(activation - 1), Coinbase: coinbase}
 	if err := ecc.VerifyProposerEligibility(chain, preFork, nil, statedb); err != nil {
 		t.Fatalf("pre-fork proposer rejected: %v", err)

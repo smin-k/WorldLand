@@ -53,6 +53,9 @@ type Config struct {
 	GasPrice   *big.Int       // Minimum gas price for mining a transaction
 	Recommit   time.Duration  // The time interval for miner to re-create mining work.
 	Noverify   bool           // Disable remote mining solution verification(only useful in ethash).
+	TPMKeyName string         `toml:",omitempty"` // Persisted Windows platform-KSP work key name.
+	TPMDID     string         `toml:",omitempty"` // 32-byte TPM DID used by the consensus registry.
+	TPMCreate  bool           `toml:",omitempty"` // Create the TPM work key if it does not exist.
 }
 
 // Miner creates blocks and searches for proof-of-work values.

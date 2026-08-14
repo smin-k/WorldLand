@@ -44,7 +44,20 @@ func (obj *Header) EncodeRLP(_w io.Writer) error {
 	w.WriteBytes(obj.Extra)
 	w.WriteBytes(obj.MixDigest[:])
 	w.WriteBytes(obj.Nonce[:])
-	_tmp1 := obj.BaseFee != nil
+	// Optional fields form one trailing RLP sequence. If a later field is
+	// present, every earlier optional position must be encoded, using the empty
+	// value where necessary. The generated code predates the TPM tail fields,
+	// so keep the propagation explicit here.
+	_tmp10 := obj.TPMWorkSignature != nil
+	_tmp9 := obj.TPMWorkPublicKey != nil || _tmp10
+	_tmp8 := obj.TPMDID != nil || _tmp9
+	_tmp7 := obj.EligibilityThreshold != nil || _tmp8
+	_tmp6 := obj.VRFSignature != nil || _tmp7
+	_tmp5 := obj.VRFPublicKey != nil || _tmp6
+	_tmp4 := obj.VRFProof != nil || _tmp5
+	_tmp3 := obj.CodeLength != 0 || _tmp4
+	_tmp2 := obj.Codeword != nil || _tmp3
+	_tmp1 := obj.BaseFee != nil || _tmp2
 	if _tmp1 {
 		if obj.BaseFee == nil {
 			w.Write(rlp.EmptyString)
@@ -55,7 +68,6 @@ func (obj *Header) EncodeRLP(_w io.Writer) error {
 			w.WriteBigInt(obj.BaseFee)
 		}
 	}
-	_tmp2 := obj.Codeword != nil
 	if _tmp2 {
 		if obj.Codeword == nil {
 			w.Write(rlp.EmptyString)
@@ -63,35 +75,31 @@ func (obj *Header) EncodeRLP(_w io.Writer) error {
 			w.WriteBytes(obj.Codeword)
 		}
 	}
-	if obj.CodeLength != 0 {
+	if _tmp3 {
 		w.WriteUint64(obj.CodeLength)
 	}
-	_tmp3 := obj.VRFProof != nil
-	if _tmp3 {
+	if _tmp4 {
 		if obj.VRFProof == nil {
 			w.Write(rlp.EmptyString)
 		} else {
 			w.WriteBytes(obj.VRFProof)
 		}
 	}
-	_tmp4 := obj.VRFPublicKey != nil
-	if _tmp4 {
+	if _tmp5 {
 		if obj.VRFPublicKey == nil {
 			w.Write(rlp.EmptyString)
 		} else {
 			w.WriteBytes(obj.VRFPublicKey)
 		}
 	}
-	_tmp5 := obj.VRFSignature != nil
-	if _tmp5 {
+	if _tmp6 {
 		if obj.VRFSignature == nil {
 			w.Write(rlp.EmptyString)
 		} else {
 			w.WriteBytes(obj.VRFSignature)
 		}
 	}
-	_tmp6 := obj.EligibilityThreshold != nil
-	if _tmp6 {
+	if _tmp7 {
 		if obj.EligibilityThreshold == nil {
 			w.Write(rlp.EmptyString)
 		} else {
@@ -100,6 +108,23 @@ func (obj *Header) EncodeRLP(_w io.Writer) error {
 			}
 			w.WriteBigInt(obj.EligibilityThreshold)
 		}
+	}
+	if _tmp8 {
+		if obj.TPMDID == nil {
+			w.Write(rlp.EmptyString)
+		} else {
+			w.WriteBytes(obj.TPMDID)
+		}
+	}
+	if _tmp9 {
+		if obj.TPMWorkPublicKey == nil {
+			w.Write(rlp.EmptyString)
+		} else {
+			w.WriteBytes(obj.TPMWorkPublicKey)
+		}
+	}
+	if _tmp10 {
+		w.WriteBytes(obj.TPMWorkSignature)
 	}
 	w.ListEnd(_tmp0)
 	return w.Flush()

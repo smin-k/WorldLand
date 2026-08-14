@@ -61,6 +61,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 	blockNumber := block.Header().Number.Uint64()
 	header := block.Header()
 	isVCT := chain.Config().IsVCT(header.Number)
+	isTPMGated := chain.Config().IsTPMGated(header.Number)
 
 	if isVCT {
 		coinbase := header.Coinbase
@@ -68,10 +69,15 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 			return fmt.Errorf("VCT: VRF key error: %w", err)
 		}
 
-		// Convert the parent-state balance to the virtual VRF trial weight.
+		// TPM-gated blocks grant exactly one VRF trial to an active registered
+		// DID. Legacy VCT blocks retain the balance-derived virtual trial rule.
 		// blockchain.go enforces the same rule on insertion.
 		trialWeight := new(big.Int).Set(big1)
-		if vctCfg := chain.Config().Vct; vctCfg != nil {
+		if !isTPMGated {
+			vctCfg := chain.Config().Vct
+			if vctCfg == nil {
+				return errors.New("VCT: missing VCT configuration")
+			}
 			if b0 := vctCfg.MinEligibleBalanceAt(header.Number); b0.Sign() > 0 {
 				sb, ok := chain.(stateBackend)
 				if !ok {
@@ -92,6 +98,15 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 						coinbase.Hex(), bal.String(), b0.String(), blockNumber)
 				}
 			}
+		}
+		if isTPMGated {
+			did, signer, err := ecc.ensureTPMWorkSigner()
+			if err != nil {
+				return err
+			}
+			header.TPMDID = append([]byte(nil), did[:]...)
+			header.TPMWorkPublicKey = signer.PublicKey()
+			header.VRFSignature = nil
 		}
 
 		if parentHeader := chain.GetHeaderByHash(header.ParentHash); parentHeader != nil {
@@ -200,9 +215,9 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		go func(id int, nonce uint64) {
 			defer pend.Done()
 			if chain.Config().IsSeoul(block.Header().Number) {
-				ecc.mine_seoul(block, id, nonce, abort, locals, isVCT)
+				ecc.mine_seoul(block, id, nonce, abort, locals, isVCT, isTPMGated)
 			} else {
-				ecc.mine(block, id, nonce, abort, locals, isVCT)
+				ecc.mine(block, id, nonce, abort, locals, isVCT, isTPMGated)
 			}
 		}(i, uint64(ecc.rand.Int63()))
 	}
@@ -230,7 +245,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 	return nil
 }
 
-func (ecc *ECC) mine(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block, isVCT bool) {
+func (ecc *ECC) mine(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block, isVCT, isTPMGated bool) {
 	header := block.Header()
 	var sealHash []byte
 	if isVCT {
@@ -241,18 +256,31 @@ func (ecc *ECC) mine(block *types.Block, id int, seed uint64, abort chan struct{
 
 	var prv *ecdsa.PrivateKey
 	var vrfOutput [32]byte
+	var workDID common.Hash
+	var workSigner interface {
+		SignDigest([]byte) ([]byte, error)
+	}
 	if isVCT {
-		ecc.lock.Lock()
-		seckey := make([]byte, len(ecc.vrfSecKey))
-		copy(seckey, ecc.vrfSecKey)
-		ecc.lock.Unlock()
+		if isTPMGated {
+			var err error
+			workDID, workSigner, err = ecc.ensureTPMWorkSigner()
+			if err != nil {
+				log.Error("VCT: mine: TPM work signer unavailable", "err", err)
+				return
+			}
+		} else {
+			ecc.lock.Lock()
+			seckey := append([]byte(nil), ecc.vrfSecKey...)
+			ecc.lock.Unlock()
+			var err error
+			prv, err = crypto.ToECDSA(seckey)
+			if err != nil {
+				log.Error("VCT: mine: invalid VRF key", "err", err)
+				return
+			}
+		}
 
 		var err error
-		prv, err = crypto.ToECDSA(seckey)
-		if err != nil {
-			log.Error("VCT: mine: invalid VRF key", "err", err)
-			return
-		}
 		vrfOutput, err = VRFOutputFromProof(header.VRFProof)
 		if err != nil {
 			log.Error("VCT: mine: cannot derive VRF output", "err", err)
@@ -289,7 +317,17 @@ search:
 				digest []byte
 				sigma  []byte
 			)
-			if isVCT {
+			if isTPMGated {
+				workMessage := computeTPMWorkSigMsg(ecc.chainIDBytes(), sealHash, workDID, vrfOutput, nonce)
+				var serr error
+				sigma, serr = workSigner.SignDigest(workMessage)
+				if serr != nil {
+					logger.Warn("VCT: TPM work authorization failed", "err", serr)
+					nonce++
+					continue
+				}
+				digest = crypto.Keccak512(computeTPMPowSeed(workMessage, sigma))
+			} else if isVCT {
 				var serr error
 				sigma, serr = crypto.Sign(computeMiningSigMsgVCT(sealHash, vrfOutput, nonce), prv)
 				if serr != nil {
@@ -311,7 +349,9 @@ search:
 				header.MixDigest = common.BytesToHash(digest)
 				header.Nonce = types.EncodeNonce(nonce)
 				header.Codeword = packCodeword(ow)
-				if isVCT {
+				if isTPMGated {
+					header.TPMWorkSignature = sigma
+				} else if isVCT {
 					header.VRFSignature = sigma
 				}
 				select {
@@ -325,7 +365,7 @@ search:
 	}
 }
 
-func (ecc *ECC) mine_seoul(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block, isVCT bool) {
+func (ecc *ECC) mine_seoul(block *types.Block, id int, seed uint64, abort chan struct{}, found chan *types.Block, isVCT, isTPMGated bool) {
 	header := block.Header()
 	var sealHash []byte
 	if isVCT {
@@ -336,18 +376,31 @@ func (ecc *ECC) mine_seoul(block *types.Block, id int, seed uint64, abort chan s
 
 	var prv *ecdsa.PrivateKey
 	var vrfOutput [32]byte
+	var workDID common.Hash
+	var workSigner interface {
+		SignDigest([]byte) ([]byte, error)
+	}
 	if isVCT {
-		ecc.lock.Lock()
-		seckey := make([]byte, len(ecc.vrfSecKey))
-		copy(seckey, ecc.vrfSecKey)
-		ecc.lock.Unlock()
+		if isTPMGated {
+			var err error
+			workDID, workSigner, err = ecc.ensureTPMWorkSigner()
+			if err != nil {
+				log.Error("VCT: mine_seoul: TPM work signer unavailable", "err", err)
+				return
+			}
+		} else {
+			ecc.lock.Lock()
+			seckey := append([]byte(nil), ecc.vrfSecKey...)
+			ecc.lock.Unlock()
+			var err error
+			prv, err = crypto.ToECDSA(seckey)
+			if err != nil {
+				log.Error("VCT: mine_seoul: invalid VRF key", "err", err)
+				return
+			}
+		}
 
 		var err error
-		prv, err = crypto.ToECDSA(seckey)
-		if err != nil {
-			log.Error("VCT: mine_seoul: invalid VRF key", "err", err)
-			return
-		}
 		vrfOutput, err = VRFOutputFromProof(header.VRFProof)
 		if err != nil {
 			log.Error("VCT: mine_seoul: cannot derive VRF output", "err", err)
@@ -384,7 +437,17 @@ search:
 				digest []byte
 				sigma  []byte
 			)
-			if isVCT {
+			if isTPMGated {
+				workMessage := computeTPMWorkSigMsg(ecc.chainIDBytes(), sealHash, workDID, vrfOutput, nonce)
+				var serr error
+				sigma, serr = workSigner.SignDigest(workMessage)
+				if serr != nil {
+					logger.Warn("VCT: TPM work authorization failed", "err", serr)
+					nonce++
+					continue
+				}
+				digest = crypto.Keccak512(computeTPMPowSeed(workMessage, sigma))
+			} else if isVCT {
 				var serr error
 				sigma, serr = crypto.Sign(computeMiningSigMsgVCT(sealHash, vrfOutput, nonce), prv)
 				if serr != nil {
@@ -407,7 +470,9 @@ search:
 				header.MixDigest = common.BytesToHash(digest)
 				header.Nonce = types.EncodeNonce(nonce)
 				header.Codeword = packCodeword(ow)
-				if isVCT {
+				if isTPMGated {
+					header.TPMWorkSignature = sigma
+				} else if isVCT {
 					header.VRFSignature = sigma
 				}
 				select {

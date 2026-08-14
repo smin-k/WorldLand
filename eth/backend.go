@@ -31,15 +31,16 @@ import (
 	"github.com/cryptoecc/WorldLand/common/hexutil"
 	"github.com/cryptoecc/WorldLand/common/math"
 	"github.com/cryptoecc/WorldLand/consensus"
+	"github.com/cryptoecc/WorldLand/consensus/VCT"
 	"github.com/cryptoecc/WorldLand/consensus/beacon"
 	"github.com/cryptoecc/WorldLand/consensus/clique"
-	"github.com/cryptoecc/WorldLand/consensus/VCT"
 	"github.com/cryptoecc/WorldLand/core"
 	"github.com/cryptoecc/WorldLand/core/bloombits"
 	"github.com/cryptoecc/WorldLand/core/rawdb"
 	"github.com/cryptoecc/WorldLand/core/state/pruner"
 	"github.com/cryptoecc/WorldLand/core/types"
 	"github.com/cryptoecc/WorldLand/core/vm"
+	"github.com/cryptoecc/WorldLand/crypto/tpmwork"
 	"github.com/cryptoecc/WorldLand/eth/downloader"
 	"github.com/cryptoecc/WorldLand/eth/ethconfig"
 	"github.com/cryptoecc/WorldLand/eth/gasprice"
@@ -477,6 +478,24 @@ func (s *Ethereum) StartMining(threads int) error {
 						log.Info("VCT: account key registered as VRF key", "coinbase", eb)
 					}
 				}
+			}
+			if s.config.Miner.TPMKeyName != "" || s.config.Miner.TPMDID != "" {
+				if s.config.Miner.TPMKeyName == "" || s.config.Miner.TPMDID == "" {
+					return errors.New("both --miner.tpmkey and --miner.tpmdid are required for TPM-gated mining")
+				}
+				didBytes, err := hexutil.Decode(s.config.Miner.TPMDID)
+				if err != nil || len(didBytes) != common.HashLength {
+					return fmt.Errorf("invalid --miner.tpmdid: expected 32-byte 0x-prefixed hex")
+				}
+				signer, err := tpmwork.OpenPlatformSigner(s.config.Miner.TPMKeyName, s.config.Miner.TPMCreate)
+				if err != nil {
+					return fmt.Errorf("cannot open TPM work key: %w", err)
+				}
+				if err := vctEngine.SetTPMWorkSigner(common.BytesToHash(didBytes), signer); err != nil {
+					_ = signer.Close()
+					return err
+				}
+				log.Info("VCT: TPM work signer configured", "did", common.BytesToHash(didBytes), "key", s.config.Miner.TPMKeyName)
 			}
 		}
 

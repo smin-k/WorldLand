@@ -573,6 +573,21 @@ var (
 		Usage:    "Disable remote sealing verification",
 		Category: flags.MinerCategory,
 	}
+	MinerTPMKeyFlag = &cli.StringFlag{
+		Name:     "miner.tpmkey",
+		Usage:    "Persisted TPM work-key name in the Windows platform crypto provider",
+		Category: flags.MinerCategory,
+	}
+	MinerTPMDIDFlag = &cli.StringFlag{
+		Name:     "miner.tpmdid",
+		Usage:    "32-byte TPM DID registered for this miner (0x-prefixed hex)",
+		Category: flags.MinerCategory,
+	}
+	MinerTPMCreateFlag = &cli.BoolFlag{
+		Name:     "miner.tpmcreate",
+		Usage:    "Create the named non-exportable TPM work key if it is missing",
+		Category: flags.MinerCategory,
+	}
 
 	// Account settings
 	UnlockedAccountFlag = &cli.StringFlag{
@@ -1686,6 +1701,15 @@ func setMiner(ctx *cli.Context, cfg *miner.Config) {
 	}
 	if ctx.IsSet(MinerNoVerifyFlag.Name) {
 		cfg.Noverify = ctx.Bool(MinerNoVerifyFlag.Name)
+	}
+	if ctx.IsSet(MinerTPMKeyFlag.Name) {
+		cfg.TPMKeyName = ctx.String(MinerTPMKeyFlag.Name)
+	}
+	if ctx.IsSet(MinerTPMDIDFlag.Name) {
+		cfg.TPMDID = ctx.String(MinerTPMDIDFlag.Name)
+	}
+	if ctx.IsSet(MinerTPMCreateFlag.Name) {
+		cfg.TPMCreate = ctx.Bool(MinerTPMCreateFlag.Name)
 	}
 	if ctx.IsSet(LegacyMinerGasTargetFlag.Name) {
 		log.Warn("The generic --miner.gastarget flag is deprecated and will be removed in the future!")

@@ -100,6 +100,12 @@ type Header struct {
 	// The 32-byte VRF output is interpreted as a big-endian uint256 and compared
 	// against this value. Nil means absent in legacy/pre-VCT headers.
 	EligibilityThreshold *big.Int `json:"eligibilityThreshold" rlp:"optional"`
+	// TPMDID identifies the active hardware registration used by this proposer.
+	TPMDID []byte `json:"tpmDID" rlp:"optional"`
+	// TPMWorkPublicKey is the uncompressed P-256 work key certified by the TPM registration.
+	TPMWorkPublicKey []byte `json:"tpmWorkPublicKey" rlp:"optional"`
+	// TPMWorkSignature is the fixed-width P-256 signature authorizing this nonce trial.
+	TPMWorkSignature []byte `json:"tpmWorkSignature" rlp:"optional"`
 
 	/*
 		TODO (MariusVanDerWijden) Add this field once needed
@@ -280,6 +286,15 @@ func CopyHeader(h *Header) *Header {
 	if len(h.VRFSignature) > 0 {
 		cpy.VRFSignature = make([]byte, len(h.VRFSignature))
 		copy(cpy.VRFSignature, h.VRFSignature)
+	}
+	if len(h.TPMDID) > 0 {
+		cpy.TPMDID = append([]byte(nil), h.TPMDID...)
+	}
+	if len(h.TPMWorkPublicKey) > 0 {
+		cpy.TPMWorkPublicKey = append([]byte(nil), h.TPMWorkPublicKey...)
+	}
+	if len(h.TPMWorkSignature) > 0 {
+		cpy.TPMWorkSignature = append([]byte(nil), h.TPMWorkSignature...)
 	}
 	if len(h.Codeword) > 0 {
 		cpy.Codeword = make([]byte, len(h.Codeword))

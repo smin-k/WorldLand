@@ -611,7 +611,8 @@ type ChainConfig struct {
 	HalvingEndTime *big.Int `json:"HalvingEndTime,omitempty"`
 	SeoulBlock     *big.Int `json:"seoulBlock,omitempty"`
 	AnnapurnaBlock *big.Int `json:"AnnapurnaBlock,omitempty"`
-	VCTBlock       *big.Int `json:"vctBlock,omitempty"` // VCT (WIP-6) switch block (nil = no fork)
+	VCTBlock       *big.Int `json:"vctBlock,omitempty"`      // VCT (WIP-6) switch block (nil = no fork)
+	TPMGatedBlock  *big.Int `json:"tpmGatedBlock,omitempty"` // TPM work-signature and one-DID-one-VRF switch
 
 	// TerminalTotalDifficulty is the amount of total difficulty reached by
 	// the network that triggers the consensus upgrade.
@@ -907,6 +908,11 @@ func (c *ChainConfig) IsVCT(num *big.Int) bool {
 	return isForked(c.VCTBlock, num)
 }
 
+// IsTPMGated returns whether TPM-gated signature mining is active.
+func (c *ChainConfig) IsTPMGated(num *big.Int) bool {
+	return isForked(c.TPMGatedBlock, num)
+}
+
 // CheckCompatible checks whether scheduled fork transitions have been imported
 // with a mismatching chain configuration.
 func (c *ChainConfig) CheckCompatible(newcfg *ChainConfig, height uint64) *ConfigCompatError {
@@ -928,6 +934,9 @@ func (c *ChainConfig) CheckCompatible(newcfg *ChainConfig, height uint64) *Confi
 // CheckConfigForkOrder checks that we don't "skip" any forks, geth isn't pluggable enough
 // to guarantee that forks can be implemented in a different order than on official networks
 func (c *ChainConfig) CheckConfigForkOrder() error {
+	if c.TPMGatedBlock != nil && c.VCTBlock == nil {
+		return fmt.Errorf("unsupported fork ordering: tpmGatedBlock requires vctBlock")
+	}
 	type fork struct {
 		name     string
 		block    *big.Int
@@ -956,6 +965,7 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "seoulBlock", block: c.SeoulBlock, optional: true},
 		{name: "AnnapurnaBlock", block: c.AnnapurnaBlock, optional: true},
 		{name: "vctBlock", block: c.VCTBlock, optional: true},
+		{name: "tpmGatedBlock", block: c.TPMGatedBlock, optional: true},
 	} {
 		if lastFork.name != "" {
 			// Next one must be higher number
@@ -1051,6 +1061,9 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 	}
 	if isForkIncompatible(c.VCTBlock, newcfg.VCTBlock, head) {
 		return newCompatError("VCT fork block", c.VCTBlock, newcfg.VCTBlock)
+	}
+	if isForkIncompatible(c.TPMGatedBlock, newcfg.TPMGatedBlock, head) {
+		return newCompatError("TPM-gated fork block", c.TPMGatedBlock, newcfg.TPMGatedBlock)
 	}
 	if c.IsVCT(head) || newcfg.IsVCT(head) {
 		var storedVCT, newVCT VctConfig
@@ -1188,6 +1201,7 @@ type Rules struct {
 	IsSeoul                                                 bool
 	IsAnnapurna                                             bool
 	IsVCT                                                   bool
+	IsTPMGated                                              bool
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -1215,5 +1229,6 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool) Rules {
 		IsSeoul:          c.IsSeoul(num),
 		IsAnnapurna:      c.IsAnnapurna(num),
 		IsVCT:            c.IsVCT(num),
+		IsTPMGated:       c.IsTPMGated(num),
 	}
 }

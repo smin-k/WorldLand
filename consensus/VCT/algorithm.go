@@ -19,6 +19,7 @@ import (
 	"github.com/cryptoecc/WorldLand/core/types"
 	"github.com/cryptoecc/WorldLand/crypto"
 	secp256k1 "github.com/cryptoecc/WorldLand/crypto/secp256k1"
+	"github.com/cryptoecc/WorldLand/crypto/tpmwork"
 	"github.com/cryptoecc/WorldLand/log"
 	"github.com/cryptoecc/WorldLand/metrics"
 	"github.com/cryptoecc/WorldLand/rpc"
@@ -49,6 +50,11 @@ type ECC struct {
 	vrfSecKey   []byte
 	vrfPubKey   []byte
 	vrfCoinbase common.Address
+
+	// TPM-gated work identity. The account/VRF key remains secp256k1; this
+	// separate P-256 key supplies one hardware-authorized work input per sign.
+	workSigner tpmwork.Signer
+	tpmDID     common.Hash
 
 	// chainID for domain-separated mining signatures and powSeed
 	chainID *big.Int
@@ -106,6 +112,31 @@ func computePowSeedVCT(sealHash []byte, vrfOutput [32]byte, nonce uint64, signat
 	copy(raw[42:74], vrfOutput[:])
 	binary.LittleEndian.PutUint64(raw[74:82], nonce)
 	copy(raw[82:], signature)
+	return crypto.Keccak256(raw)
+}
+
+// computeTPMWorkSigMsg binds one TPM authorization to one chain, template,
+// registered DID, verified VRF result and nonce.
+func computeTPMWorkSigMsg(chainIDBytes, sealHash []byte, did common.Hash, vrfOutput [32]byte, nonce uint64) []byte {
+	domain := []byte("TGCT_WORK_V1")
+	raw := make([]byte, len(domain)+32+32+32+32+8)
+	offset := copy(raw, domain)
+	offset += copy(raw[offset:], chainIDBytes)
+	offset += copy(raw[offset:], sealHash)
+	offset += copy(raw[offset:], did[:])
+	offset += copy(raw[offset:], vrfOutput[:])
+	binary.BigEndian.PutUint64(raw[offset:offset+8], nonce)
+	return crypto.Keccak256(raw)
+}
+
+// computeTPMPowSeed gives each distinct message-signature pair exactly one
+// canonical ECCPoW input.
+func computeTPMPowSeed(workMessage, signature []byte) []byte {
+	domain := []byte("TGCT_ECCPOW_V1")
+	raw := make([]byte, len(domain)+len(workMessage)+len(signature))
+	offset := copy(raw, domain)
+	offset += copy(raw[offset:], workMessage)
+	copy(raw[offset:], signature)
 	return crypto.Keccak256(raw)
 }
 
@@ -233,7 +264,17 @@ func NewFullFaker() *ECC {
 
 // Close shuts down the remote sealer.
 func (ecc *ECC) Close() error {
-	return ecc.StopRemoteSealer()
+	if err := ecc.StopRemoteSealer(); err != nil {
+		return err
+	}
+	ecc.lock.Lock()
+	signer := ecc.workSigner
+	ecc.workSigner = nil
+	ecc.lock.Unlock()
+	if signer != nil {
+		return signer.Close()
+	}
+	return nil
 }
 
 // StopRemoteSealer stops the remote sealer goroutine.
@@ -373,6 +414,28 @@ func (ecc *ECC) VerifyProposerEligibility(chain consensus.ChainHeaderReader, hea
 	if !chain.Config().IsVCT(header.Number) {
 		return nil
 	}
+	if chain.Config().IsTPMGated(header.Number) {
+		if len(header.TPMDID) != common.HashLength {
+			return fmt.Errorf("VCT: TPM DID must be %d bytes, got %d", common.HashLength, len(header.TPMDID))
+		}
+		if err := verifyTPMRegistration(parentState, common.BytesToHash(header.TPMDID), header.Coinbase, header.TPMWorkPublicKey, header.VRFPublicKey); err != nil {
+			return err
+		}
+		if parent != nil && len(header.VRFProof) > 0 {
+			output, err := VRFOutputFromProof(header.VRFProof)
+			if err != nil {
+				return fmt.Errorf("VCT: cannot derive TPM-DID VRF output: %w", err)
+			}
+			var rawDeltaT uint64
+			if header.Time > parent.Time {
+				rawDeltaT = header.Time - parent.Time
+			}
+			if !EligibilityPassesWithWeight(output, header.EligibilityThreshold, EffectiveDeltaT(rawDeltaT), big1) {
+				return errors.New("VCT: VRF proof does not pass one-DID-one-trial threshold")
+			}
+		}
+		return nil
+	}
 	vctCfg := chain.Config().Vct
 	if vctCfg == nil {
 		return nil
@@ -442,6 +505,38 @@ func (ecc *ECC) SetVRFKey(seckey []byte) error {
 	ecc.vrfPubKey = pubkey
 	ecc.vrfCoinbase = addr
 	return nil
+}
+
+// SetTPMWorkSigner installs the non-exportable work-key backend and its DID.
+// Registration against parent state is checked independently during block
+// insertion; setting a local signer does not register or authorize a device.
+func (ecc *ECC) SetTPMWorkSigner(did common.Hash, signer tpmwork.Signer) error {
+	if did == (common.Hash{}) {
+		return errors.New("VCT: TPM DID is zero")
+	}
+	if signer == nil {
+		return errors.New("VCT: TPM work signer is nil")
+	}
+	if _, err := tpmwork.ParsePublicKey(signer.PublicKey()); err != nil {
+		return fmt.Errorf("VCT: invalid TPM work public key: %w", err)
+	}
+	ecc.lock.Lock()
+	defer ecc.lock.Unlock()
+	if ecc.workSigner != nil && ecc.workSigner != signer {
+		_ = ecc.workSigner.Close()
+	}
+	ecc.tpmDID = did
+	ecc.workSigner = signer
+	return nil
+}
+
+func (ecc *ECC) ensureTPMWorkSigner() (common.Hash, tpmwork.Signer, error) {
+	ecc.lock.Lock()
+	defer ecc.lock.Unlock()
+	if ecc.tpmDID == (common.Hash{}) || ecc.workSigner == nil {
+		return common.Hash{}, nil, errors.New("VCT: TPM work signer not configured")
+	}
+	return ecc.tpmDID, ecc.workSigner, nil
 }
 
 // -- Legacy LDPC mining helpers ------------------------------------------------

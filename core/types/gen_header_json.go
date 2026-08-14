@@ -38,6 +38,9 @@ func (h Header) MarshalJSON() ([]byte, error) {
 		VRFProof             hexutil.Bytes  `json:"vrfProof"         rlp:"optional"`
 		VRFPublicKey         hexutil.Bytes  `json:"vrfPublicKey"     rlp:"optional"`
 		VRFSignature         hexutil.Bytes  `json:"vrfSignature"     rlp:"optional"`
+		TPMDID               hexutil.Bytes  `json:"tpmDID"           rlp:"optional"`
+		TPMWorkPublicKey     hexutil.Bytes  `json:"tpmWorkPublicKey" rlp:"optional"`
+		TPMWorkSignature     hexutil.Bytes  `json:"tpmWorkSignature" rlp:"optional"`
 		EligibilityThreshold *hexutil.Big   `json:"eligibilityThreshold" rlp:"optional"`
 	}
 	var enc Header
@@ -63,6 +66,9 @@ func (h Header) MarshalJSON() ([]byte, error) {
 	enc.VRFProof = h.VRFProof
 	enc.VRFPublicKey = h.VRFPublicKey
 	enc.VRFSignature = h.VRFSignature
+	enc.TPMDID = h.TPMDID
+	enc.TPMWorkPublicKey = h.TPMWorkPublicKey
+	enc.TPMWorkSignature = h.TPMWorkSignature
 	enc.EligibilityThreshold = (*hexutil.Big)(h.EligibilityThreshold)
 	return json.Marshal(&enc)
 }
@@ -91,6 +97,9 @@ func (h *Header) UnmarshalJSON(input []byte) error {
 		VRFProof             *hexutil.Bytes  `json:"vrfProof"         rlp:"optional"`
 		VRFPublicKey         *hexutil.Bytes  `json:"vrfPublicKey"     rlp:"optional"`
 		VRFSignature         *hexutil.Bytes  `json:"vrfSignature"     rlp:"optional"`
+		TPMDID               *hexutil.Bytes  `json:"tpmDID"           rlp:"optional"`
+		TPMWorkPublicKey     *hexutil.Bytes  `json:"tpmWorkPublicKey" rlp:"optional"`
+		TPMWorkSignature     *hexutil.Bytes  `json:"tpmWorkSignature" rlp:"optional"`
 		EligibilityThreshold *hexutil.Big    `json:"eligibilityThreshold" rlp:"optional"`
 	}
 	var dec Header
@@ -171,6 +180,15 @@ func (h *Header) UnmarshalJSON(input []byte) error {
 	}
 	if dec.VRFSignature != nil {
 		h.VRFSignature = *dec.VRFSignature
+	}
+	if dec.TPMDID != nil {
+		h.TPMDID = *dec.TPMDID
+	}
+	if dec.TPMWorkPublicKey != nil {
+		h.TPMWorkPublicKey = *dec.TPMWorkPublicKey
+	}
+	if dec.TPMWorkSignature != nil {
+		h.TPMWorkSignature = *dec.TPMWorkSignature
 	}
 	if dec.EligibilityThreshold != nil {
 		h.EligibilityThreshold = (*big.Int)(dec.EligibilityThreshold)

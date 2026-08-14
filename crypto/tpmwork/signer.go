@@ -33,6 +33,25 @@ type PrivateExportProbe interface {
 	PrivateKeyExportPolicy() (uint32, error)
 }
 
+// PlatformProperty is a raw property returned by the Windows Platform Crypto
+// Provider. Status is zero when Value was read successfully; otherwise it is
+// the NCrypt status returned by the provider. Scope is either "provider" or
+// "key".
+type PlatformProperty struct {
+	Name   string
+	Scope  string
+	Value  []byte
+	Status uint32
+}
+
+// PlatformEvidenceProbe exposes read-only TPM and key-attestation properties.
+// It is intentionally diagnostic: a property being present is not, by itself,
+// a remotely verifiable proof that a key was created in a genuine TPM.
+type PlatformEvidenceProbe interface {
+	ProbePlatformEvidence() []PlatformProperty
+	ProbeAttestationKeyEvidence(keyName string) []PlatformProperty
+}
+
 // ParsePublicKey parses the uncompressed SEC1 encoding of a P-256 public key.
 func ParsePublicKey(encoded []byte) (*ecdsa.PublicKey, error) {
 	if len(encoded) != PublicKeySize || encoded[0] != 4 {

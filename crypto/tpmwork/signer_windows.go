@@ -20,6 +20,28 @@ const (
 	ecdsaPublicP256  = 0x31534345 // BCRYPT_ECDSA_PUBLIC_P256_MAGIC ("ECS1")
 )
 
+var providerEvidenceProperties = []string{
+	"PCP_PLATFORM_TYPE",
+	"PCP_PROVIDER_VERSION",
+	"PCP_TPM_VERSION",
+	"PCP_TPM_MANUFACTURER_ID",
+	"PCP_TPM_FW_VERSION",
+	"PCP_EKPUB",
+	"PCP_RSA_EKPUB",
+	"PCP_ECC_EKPUB",
+	"PCP_SRKPUB",
+}
+
+var keyEvidenceProperties = []string{
+	"PCP_TPM2BNAME",
+	"PCP_KEY_CREATIONHASH",
+	"PCP_KEY_CREATIONTICKET",
+	"PCP_KEY_USAGE_POLICY",
+	"PCP_TPM12_IDBINDING",
+	"PCP_TPM12_IDBINDING_DYNAMIC",
+	"PCP_TPM12_KEYATTESTATION",
+}
+
 var (
 	ncrypt                  = windows.NewLazySystemDLL("ncrypt.dll")
 	procOpenStorageProvider = ncrypt.NewProc("NCryptOpenStorageProvider")
@@ -146,6 +168,44 @@ func (s *PlatformSigner) PrivateKeyExportPolicy() (uint32, error) {
 	return policy, nil
 }
 
+// ProbePlatformEvidence reads the Platform Crypto Provider properties that
+// are relevant to EK-backed key attestation. It never changes the TPM, creates
+// a key, or exports private key material.
+func (s *PlatformSigner) ProbePlatformEvidence() []PlatformProperty {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	properties := make([]PlatformProperty, 0, len(providerEvidenceProperties)+len(keyEvidenceProperties))
+	for _, name := range providerEvidenceProperties {
+		properties = append(properties, readPlatformProperty(s.provider, "provider", name))
+	}
+	for _, name := range keyEvidenceProperties {
+		properties = append(properties, readPlatformProperty(s.key, "key", name))
+	}
+	return properties
+}
+
+// ProbeAttestationKeyEvidence reads identity-binding properties from an
+// already-created AIK. The key is never created or changed by this method.
+func (s *PlatformSigner) ProbeAttestationKeyEvidence(keyName string) []PlatformProperty {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.provider == 0 || keyName == "" {
+		return nil
+	}
+	keyName16, _ := windows.UTF16PtrFromString(keyName)
+	var key uintptr
+	status, _, _ := procOpenKey.Call(s.provider, uintptr(unsafe.Pointer(&key)), uintptr(unsafe.Pointer(keyName16)), 0, ncryptSilentFlag)
+	if status != 0 {
+		return []PlatformProperty{{Name: keyName, Scope: "attestation-key", Status: uint32(status)}}
+	}
+	defer procFreeObject.Call(key)
+	properties := make([]PlatformProperty, 0, len(keyEvidenceProperties))
+	for _, name := range keyEvidenceProperties {
+		properties = append(properties, readPlatformProperty(key, "attestation-key", name))
+	}
+	return properties
+}
+
 func (s *PlatformSigner) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -182,6 +242,36 @@ func exportPublicKey(key uintptr) ([]byte, error) {
 	copy(public[1:33], blob[8:40])
 	copy(public[33:], blob[40:72])
 	return public, nil
+}
+
+func readPlatformProperty(handle uintptr, scope, name string) PlatformProperty {
+	result := PlatformProperty{Name: name, Scope: scope}
+	if handle == 0 {
+		result.Status = 0xffffffff
+		return result
+	}
+	property, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		result.Status = 0xffffffff
+		return result
+	}
+	var size uint32
+	status, _, _ := procGetProperty.Call(handle, uintptr(unsafe.Pointer(property)), 0, 0, uintptr(unsafe.Pointer(&size)), 0)
+	if status != 0 {
+		result.Status = uint32(status)
+		return result
+	}
+	if size == 0 {
+		return result
+	}
+	value := make([]byte, size)
+	status, _, _ = procGetProperty.Call(handle, uintptr(unsafe.Pointer(property)), uintptr(unsafe.Pointer(&value[0])), uintptr(len(value)), uintptr(unsafe.Pointer(&size)), 0)
+	if status != 0 {
+		result.Status = uint32(status)
+		return result
+	}
+	result.Value = value[:size]
+	return result
 }
 
 func ncryptError(operation string, status uintptr) error {

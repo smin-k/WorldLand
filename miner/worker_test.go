@@ -206,6 +206,44 @@ func newTestWorker(t *testing.T, chainConfig *params.ChainConfig, engine consens
 	return w, backend
 }
 
+func TestPrivateEnrollmentTransactionStaging(t *testing.T) {
+	chainConfig := new(params.ChainConfig)
+	*chainConfig = *params.AllEthashProtocolChanges
+	chainConfig.ChainID = big.NewInt(1337)
+	db := rawdb.NewMemoryDatabase()
+	engine := ethash.NewFaker()
+	w, backend := newTestWorker(t, chainConfig, engine, db, 0)
+	defer w.close()
+	defer backend.chain.Stop()
+
+	selector := crypto.Keccak256([]byte("publishProducerChallenge(bytes32,bytes,bytes,bytes32,bytes)"))[:4]
+	registry := common.HexToAddress("0x0000000000000000000000000000000000000801")
+	tx := types.NewTransaction(0, registry, new(big.Int), 500000, big.NewInt(params.InitialBaseFee), selector)
+	signed, err := types.SignTx(tx, types.MakeSigner(chainConfig, big.NewInt(1)), testBankKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.submitPrivateEnrollmentTransaction(1, signed); err != nil {
+		t.Fatal(err)
+	}
+	staged := w.privateEnrollmentTransactions(1)
+	if len(staged) != 1 || staged[0].Hash() != signed.Hash() {
+		t.Fatalf("unexpected staged transactions: %v", staged)
+	}
+	environment, err := w.prepareWork(&generateParams{timestamp: uint64(time.Now().Unix()), coinbase: testBankAddress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer environment.discard()
+	w.commitPrivateEnrollmentTransactions(environment)
+	if len(environment.txs) != 1 || environment.txs[0].Hash() != signed.Hash() {
+		t.Fatalf("private transaction was not executed first: %v", environment.txs)
+	}
+	if err := w.submitPrivateEnrollmentTransaction(2, signed); err == nil {
+		t.Fatal("accepted a private transaction for a non-next height")
+	}
+}
+
 func TestGenerateBlockAndImportEthash(t *testing.T) {
 	testGenerateBlockAndImport(t, false)
 }

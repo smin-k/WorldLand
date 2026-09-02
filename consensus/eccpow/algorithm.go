@@ -27,13 +27,6 @@ type ECC struct {
 	hashrate metrics.Meter // Meter tracking the average hashrate
 	remote   *remoteSealer
 
-	// Remote sealer related fields
-	workCh       chan *sealTask   // Notification channel to push new work and relative result channel to remote sealer
-	fetchWorkCh  chan *sealWork   // Channel used for remote sealer to fetch mining work
-	submitWorkCh chan *mineResult // Channel used for remote sealer to submit their mining result
-	fetchRateCh  chan chan uint64 // Channel used to gather submitted hash rate for local or remote sealer.
-	submitRateCh chan *hashrate   // Channel used for remote sealer to submit their mining hashrate
-
 	shared    *ECC          // Shared PoW verifier to avoid cache regeneration
 	fakeFail  uint64        // Block number which fails PoW check even in fake mode
 	fakeDelay time.Duration // Time delay to sleep for before returning from verify
@@ -99,7 +92,7 @@ type verifyParameters struct {
 //	floatMatrix [][]float64
 //)
 
-//RunOptimizedConcurrencyLDPC use goroutine for mining block
+// RunOptimizedConcurrencyLDPC use goroutine for mining block
 func RunOptimizedConcurrencyLDPC(header *types.Header, hash []byte) (bool, []int, []int, uint64, []byte) {
 	//Need to set difficulty before running LDPC
 	// Number of goroutines : 500, Number of attempts : 50000 Not bad
@@ -190,7 +183,7 @@ func RunOptimizedConcurrencyLDPC_Seoul(header *types.Header, hash []byte) (bool,
 	return flag, hashVector, outputWord, LDPCNonce, digest
 }
 
-//MakeDecision check outputWord is valid or not using colInRow
+// MakeDecision check outputWord is valid or not using colInRow
 func MakeDecision(header *types.Header, colInRow [][]int, outputWord []int) (bool, int) {
 	parameters, difficultyLevel := setParameters(header)
 	for i := 0; i < parameters.m; i++ {
@@ -219,7 +212,7 @@ func MakeDecision(header *types.Header, colInRow [][]int, outputWord []int) (boo
 	return false, numOfOnes
 }
 
-//MakeDecision check outputWord is valid or not using colInRow
+// MakeDecision check outputWord is valid or not using colInRow
 func MakeDecision_Seoul(header *types.Header, colInRow [][]int, outputWord []int) (bool, int) {
 	parameters, _ := setParameters_Seoul(header)
 	for i := 0; i < parameters.m; i++ {
@@ -238,8 +231,8 @@ func MakeDecision_Seoul(header *types.Header, colInRow [][]int, outputWord []int
 		numOfOnes += val
 	}
 
-	if numOfOnes >= parameters.n/4  &&
-		numOfOnes <= parameters.n/4 * 3 {
+	if numOfOnes >= parameters.n/4 &&
+		numOfOnes <= parameters.n/4*3 {
 		//fmt.Printf("hamming weight: %v\n", numOfOnes)
 		return true, numOfOnes
 	}
@@ -294,14 +287,9 @@ func New(config Config, notify []string, noverify bool) *ECC {
 		config.Log = log.Root()
 	}
 	ecc := &ECC{
-		config:       config,
-		update:       make(chan struct{}),
-		hashrate:     metrics.NewMeterForced(),
-		workCh:       make(chan *sealTask),
-		fetchWorkCh:  make(chan *sealWork),
-		submitWorkCh: make(chan *mineResult),
-		fetchRateCh:  make(chan chan uint64),
-		submitRateCh: make(chan *hashrate),
+		config:   config,
+		update:   make(chan struct{}),
+		hashrate: metrics.NewMeterForced(),
 	}
 	if config.PowMode == ModeShared {
 		ecc.shared = sharedECC
@@ -312,14 +300,9 @@ func New(config Config, notify []string, noverify bool) *ECC {
 
 func NewTester(notify []string, noverify bool) *ECC {
 	ecc := &ECC{
-		config:       Config{PowMode: ModeTest},
-		update:       make(chan struct{}),
-		hashrate:     metrics.NewMeterForced(),
-		workCh:       make(chan *sealTask),
-		fetchWorkCh:  make(chan *sealWork),
-		submitWorkCh: make(chan *mineResult),
-		fetchRateCh:  make(chan chan uint64),
-		submitRateCh: make(chan *hashrate),
+		config:   Config{PowMode: ModeTest, Log: log.Root()},
+		update:   make(chan struct{}),
+		hashrate: metrics.NewMeterForced(),
 	}
 	ecc.remote = startRemoteSealer(ecc, notify, noverify)
 	return ecc
@@ -509,8 +492,8 @@ func seedHash(block uint64) []byte {
 	return seed
 }
 
-//// SeedHash is the seed to use for generating a verification cache and the mining
-//// dataset.
+// // SeedHash is the seed to use for generating a verification cache and the mining
+// // dataset.
 func SeedHash(block uint64) []byte {
 	return seedHash(block)
 }

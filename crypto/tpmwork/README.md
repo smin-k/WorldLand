@@ -52,22 +52,19 @@ The AMD fTPM used for this prototype returned and locally verified:
 use a fresh unpredictable challenge supplied by the registrar, not the fixed
 diagnostic challenge in `tpmworkbench`.
 
-## Remaining enrollment boundary
+## Credential activation
 
-Successful `VerifyKeyCertification` proves that the work key and AIK were
-co-resident in one TPM at certification time. It does not make an arbitrary
-AIK trustworthy. The registrar must additionally:
+`EnrollmentIdentity` reads the standard RSA EK, its certificate NV index and
+the persisted AIK public area. `ActivateCredential` uses a policy session with
+the endorsement hierarchy and executes `TPM2_ActivateCredential` on the same
+Platform Provider TBS context that owns the NCrypt AIK handle. The default TCG
+Windows locations are:
 
-1. validate an EK certificate against an accepted manufacturer root and
-   revocation policy;
-2. run credential activation so that the AIK is proven to reside with that EK;
-3. derive one canonical device nullifier from the accepted EK and reject a
-   previously used nullifier;
-4. authorize the work-key hash, VRF-key hash and controller for the registry
-   contract.
+- RSA EK persistent handle: `0x81010001`
+- RSA EK certificate NV index: `0x01c00002`
 
-The tested AIK exposes an 834-byte `PCP_TPM12_IDBINDING` blob, so the Windows
-side provides the material needed for the next enrollment stage. Parsing that
-provider-specific blob, certificate-chain policy and credential activation are
-not yet implemented. Until they are, this is a work-key certification
-prototype, not a complete proof of `1 physical TPM = 1 DID`.
+Both are configurable by the enrollment CLI. The validator-side credential
+creation, certificate-chain policy and canonical device nullifier are
+implemented in `contracts/tpmregistry`. Certificate revocation feeds and
+vendor root/profile selection remain deployment policy rather than TPM backend
+logic.

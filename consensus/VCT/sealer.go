@@ -70,7 +70,7 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		}
 
 		// TPM-gated blocks grant exactly one VRF trial to an active registered
-		// DID. Legacy VCT blocks retain the balance-derived virtual trial rule.
+		// TPM-bound identity. Legacy VCT blocks retain the balance-derived virtual trial rule.
 		// blockchain.go enforces the same rule on insertion.
 		trialWeight := new(big.Int).Set(big1)
 		if !isTPMGated {

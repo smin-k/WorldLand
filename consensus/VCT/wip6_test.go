@@ -106,6 +106,93 @@ func TestWIP6MessageFormats(t *testing.T) {
 	}
 }
 
+func TestDelayedVRFSeedUsesBranchLocalAncestor(t *testing.T) {
+	cfg := &params.ChainConfig{
+		ChainID:  big.NewInt(10399),
+		VCTBlock: big.NewInt(0),
+		Vct:      &params.VctConfig{SeedDelay: 3},
+	}
+	chain := &mockChainReader{cfg: cfg, headers: make(map[common.Hash]*types.Header)}
+	genesis := &types.Header{Number: big.NewInt(0), Difficulty: big.NewInt(1), Time: 1}
+	h1 := &types.Header{ParentHash: genesis.Hash(), Number: big.NewInt(1), Difficulty: big.NewInt(1), Time: 2}
+	h2 := &types.Header{ParentHash: h1.Hash(), Number: big.NewInt(2), Difficulty: big.NewInt(1), Time: 3}
+	left3 := &types.Header{ParentHash: h2.Hash(), Number: big.NewInt(3), Difficulty: big.NewInt(1), Time: 4, Extra: []byte("left")}
+	left4 := &types.Header{ParentHash: left3.Hash(), Number: big.NewInt(4), Difficulty: big.NewInt(1), Time: 5}
+	right3 := &types.Header{ParentHash: h2.Hash(), Number: big.NewInt(3), Difficulty: big.NewInt(1), Time: 4, Extra: []byte("right")}
+	right4 := &types.Header{ParentHash: right3.Hash(), Number: big.NewInt(4), Difficulty: big.NewInt(1), Time: 5}
+	for _, header := range []*types.Header{genesis, h1, h2, left3, left4, right3, right4} {
+		chain.headers[header.Hash()] = header
+	}
+
+	ecc := &ECC{chainID: cfg.ChainID}
+	leftMsg, err := ecc.delayedVRFMessage(chain, left4, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightMsg, err := ecc.delayedVRFMessage(chain, right4, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(leftMsg, rightMsg) {
+		t.Fatal("forks after the delayed seed height changed the VRF input")
+	}
+	want := computeVRFMsg(ecc.chainIDBytes(), h2.Hash().Bytes(), 5)
+	if !bytes.Equal(leftMsg, want) {
+		t.Fatal("VRF input was not bound to the height-2 delayed ancestor")
+	}
+	parentBound := computeVRFMsg(ecc.chainIDBytes(), left4.Hash().Bytes(), 5)
+	if bytes.Equal(leftMsg, parentBound) {
+		t.Fatal("delay three unexpectedly used the immediate parent")
+	}
+
+	cfg.Vct.SeedDelay = 8
+	earlyMsg, err := ecc.delayedVRFMessage(chain, h1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := computeVRFMsg(ecc.chainIDBytes(), genesis.Hash().Bytes(), 2); !bytes.Equal(earlyMsg, want) {
+		t.Fatal("early-height VRF input was not anchored to genesis")
+	}
+}
+
+func TestDelayedVRFSeedIgnoresSameIdentityTemplateVariants(t *testing.T) {
+	seckey, pubkey := makeTestKeypair(t)
+	proof, output, err := VRFProve(seckey, pubkey, []byte("ancestor lottery"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &params.ChainConfig{ChainID: big.NewInt(10399), VCTBlock: big.NewInt(0), Vct: &params.VctConfig{SeedDelay: 2}}
+	chain := &mockChainReader{cfg: cfg, headers: make(map[common.Hash]*types.Header)}
+	genesis := &types.Header{Number: big.NewInt(0), Difficulty: big.NewInt(1), Time: 1}
+	h1 := &types.Header{ParentHash: genesis.Hash(), Number: big.NewInt(1), Difficulty: big.NewInt(1), Time: 2}
+	seedA := &types.Header{ParentHash: h1.Hash(), Number: big.NewInt(2), Difficulty: big.NewInt(1), Time: 3, Extra: []byte("template-a"), VRFProof: proof}
+	seedB := types.CopyHeader(seedA)
+	seedB.Extra = []byte("template-b")
+	if seedA.Hash() == seedB.Hash() {
+		t.Fatal("test templates unexpectedly have the same block hash")
+	}
+	childA := &types.Header{ParentHash: seedA.Hash(), Number: big.NewInt(3), Difficulty: big.NewInt(1), Time: 4}
+	childB := &types.Header{ParentHash: seedB.Hash(), Number: big.NewInt(3), Difficulty: big.NewInt(1), Time: 4}
+	for _, header := range []*types.Header{genesis, h1, seedA, seedB, childA, childB} {
+		chain.headers[header.Hash()] = header
+	}
+	ecc := &ECC{chainID: cfg.ChainID}
+	msgA, err := ecc.delayedVRFMessage(chain, childA, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgB, err := ecc.delayedVRFMessage(chain, childB, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(msgA, msgB) {
+		t.Fatal("same identity VRF output was grindable through block-template changes")
+	}
+	if want := computeVRFMsg(ecc.chainIDBytes(), output[:], 4); !bytes.Equal(msgA, want) {
+		t.Fatal("delayed input did not use the ancestor's VRF output")
+	}
+}
+
 func TestVCTPowSeedCommitsToVRFOutputAndPerTrialSignatureNotProof(t *testing.T) {
 	ecc := &ECC{config: Config{Log: log.Root()}, chainID: big.NewInt(10399)}
 	header := &types.Header{
@@ -439,7 +526,7 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 	header.VRFSignature = sigma
 	header.Nonce = types.EncodeNonce(nonce)
 
-	if err := ecc.verifyMiningSig(header, sealHash, true); err != nil {
+	if err := ecc.verifyMiningSig(chain, header, sealHash, true); err != nil {
 		t.Fatalf("verifyMiningSig: %v", err)
 	}
 
@@ -452,7 +539,7 @@ func TestVCTVRFFullPipeline(t *testing.T) {
 	sValue.Sub(crypto.S256().Params().N, sValue)
 	copy(malleated.VRFSignature[32:64], sValue.FillBytes(make([]byte, 32)))
 	malleated.VRFSignature[64] ^= 1
-	if err := ecc.verifyMiningSig(malleated, sealHash, true); err == nil {
+	if err := ecc.verifyMiningSig(chain, malleated, sealHash, true); err == nil {
 		t.Fatal("malleated high-s mining signature accepted")
 	}
 	t.Logf("VCT full pipeline OK: coinbase=%s VRFproof=%d bytes", coinbase.Hex(), len(proof))

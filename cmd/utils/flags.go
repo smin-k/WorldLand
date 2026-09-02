@@ -580,7 +580,7 @@ var (
 	}
 	MinerTPMDIDFlag = &cli.StringFlag{
 		Name:     "miner.tpmdid",
-		Usage:    "32-byte TPM DID registered for this miner (0x-prefixed hex)",
+		Usage:    "32-byte TPM-bound consensus identity (legacy flag name; 0x-prefixed hex)",
 		Category: flags.MinerCategory,
 	}
 	MinerTPMCreateFlag = &cli.BoolFlag{

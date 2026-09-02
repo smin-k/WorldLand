@@ -116,7 +116,7 @@ func computePowSeedVCT(sealHash []byte, vrfOutput [32]byte, nonce uint64, signat
 }
 
 // computeTPMWorkSigMsg binds one TPM authorization to one chain, template,
-// registered DID, verified VRF result and nonce.
+// registered TPM-bound identity, verified VRF result and nonce.
 func computeTPMWorkSigMsg(chainIDBytes, sealHash []byte, did common.Hash, vrfOutput [32]byte, nonce uint64) []byte {
 	domain := []byte("TGCT_WORK_V1")
 	raw := make([]byte, len(domain)+32+32+32+32+8)
@@ -150,12 +150,14 @@ func computeLegacyPowSeed(sealHash []byte, nonce uint64) []byte {
 }
 
 // computeVRFMsg returns the WIP-6 VRF input message:
-// VCT_VRF || chainId (32 bytes) || phash_{h-1} (32 bytes) || h (8 bytes BE).
-func computeVRFMsg(chainIDBytes, parentHash []byte, blockNumber uint64) []byte {
+// VCT_VRF || chainId (32 bytes) || seed (32 bytes) || h (8 bytes BE).
+// The caller derives seed from the branch-local delayed ancestor's unique VRF
+// output, with an ancestor-hash fallback during pre-VCT bootstrap.
+func computeVRFMsg(chainIDBytes, seed []byte, blockNumber uint64) []byte {
 	msg := make([]byte, 7+32+32+8)
 	copy(msg[:7], "VCT_VRF")
 	copy(msg[7:39], chainIDBytes)
-	copy(msg[39:71], parentHash)
+	copy(msg[39:71], seed)
 	binary.BigEndian.PutUint64(msg[71:79], blockNumber)
 	return msg
 }
@@ -367,24 +369,21 @@ func (ecc *ECC) GetEligibilitySeedHash(chain consensus.ChainHeaderReader, blockN
 }
 
 // IsEligibleForBlock checks VCT eligibility for blockNumber.
-// parentHash is the ParentHash of the block being mined.
+// parentHash is the ParentHash of the block being mined. The configured
+// branch-local delayed ancestor is resolved from that parent.
 // Returns (eligible, proofBytes, error).
 func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumber uint64, parentHash common.Hash, threshold *big.Int) (bool, []byte, error) {
-	ecc.lock.Lock()
-	defer ecc.lock.Unlock()
-
-	if len(ecc.vrfSecKey) == 0 || len(ecc.vrfPubKey) == 0 {
-		return false, nil, errors.New("VCT: VRF keys not configured")
-	}
-
 	var msg []byte
 	if chain.Config().IsVCT(new(big.Int).SetUint64(blockNumber)) {
-		// WIP-6: VRF message = VCT_VRF || chainId || phash_{h-1} || h
-		chainIDBytes := make([]byte, 32)
-		if ecc.chainID != nil {
-			ecc.chainID.FillBytes(chainIDBytes)
+		parent := chain.GetHeader(parentHash, blockNumber-1)
+		if parent == nil {
+			return false, nil, fmt.Errorf("VCT: parent header unavailable for block %d", blockNumber)
 		}
-		msg = computeVRFMsg(chainIDBytes, parentHash.Bytes(), blockNumber)
+		var err error
+		msg, err = ecc.delayedVRFMessage(chain, parent, blockNumber)
+		if err != nil {
+			return false, nil, err
+		}
 	} else {
 		seedHash := ecc.GetEligibilitySeedHash(chain, blockNumber)
 		if seedHash == (common.Hash{}) {
@@ -392,8 +391,15 @@ func (ecc *ECC) IsEligibleForBlock(chain consensus.ChainHeaderReader, blockNumbe
 		}
 		msg = seedHash.Bytes()
 	}
+	ecc.lock.Lock()
+	seckey := append([]byte(nil), ecc.vrfSecKey...)
+	pubkey := append([]byte(nil), ecc.vrfPubKey...)
+	ecc.lock.Unlock()
+	if len(seckey) == 0 || len(pubkey) == 0 {
+		return false, nil, errors.New("VCT: VRF keys not configured")
+	}
 
-	proof, _, err := VRFProve(ecc.vrfSecKey, ecc.vrfPubKey, msg)
+	proof, _, err := VRFProve(seckey, pubkey, msg)
 	if err != nil {
 		return false, nil, fmt.Errorf("VCT: VRF prove failed: %w", err)
 	}
@@ -416,7 +422,7 @@ func (ecc *ECC) VerifyProposerEligibility(chain consensus.ChainHeaderReader, hea
 	}
 	if chain.Config().IsTPMGated(header.Number) {
 		if len(header.TPMDID) != common.HashLength {
-			return fmt.Errorf("VCT: TPM DID must be %d bytes, got %d", common.HashLength, len(header.TPMDID))
+			return fmt.Errorf("VCT: TPM identity must be %d bytes, got %d", common.HashLength, len(header.TPMDID))
 		}
 		if err := verifyTPMRegistration(parentState, common.BytesToHash(header.TPMDID), header.Coinbase, header.TPMWorkPublicKey, header.VRFPublicKey); err != nil {
 			return err
@@ -424,14 +430,14 @@ func (ecc *ECC) VerifyProposerEligibility(chain consensus.ChainHeaderReader, hea
 		if parent != nil && len(header.VRFProof) > 0 {
 			output, err := VRFOutputFromProof(header.VRFProof)
 			if err != nil {
-				return fmt.Errorf("VCT: cannot derive TPM-DID VRF output: %w", err)
+				return fmt.Errorf("VCT: cannot derive TPM-bound VRF output: %w", err)
 			}
 			var rawDeltaT uint64
 			if header.Time > parent.Time {
 				rawDeltaT = header.Time - parent.Time
 			}
 			if !EligibilityPassesWithWeight(output, header.EligibilityThreshold, EffectiveDeltaT(rawDeltaT), big1) {
-				return errors.New("VCT: VRF proof does not pass one-DID-one-trial threshold")
+				return errors.New("VCT: VRF proof does not pass one-identity-one-trial threshold")
 			}
 		}
 		return nil
@@ -507,12 +513,12 @@ func (ecc *ECC) SetVRFKey(seckey []byte) error {
 	return nil
 }
 
-// SetTPMWorkSigner installs the non-exportable work-key backend and its DID.
+// SetTPMWorkSigner installs the non-exportable work-key backend and its consensus identity.
 // Registration against parent state is checked independently during block
 // insertion; setting a local signer does not register or authorize a device.
 func (ecc *ECC) SetTPMWorkSigner(did common.Hash, signer tpmwork.Signer) error {
 	if did == (common.Hash{}) {
-		return errors.New("VCT: TPM DID is zero")
+		return errors.New("VCT: TPM identity is zero")
 	}
 	if signer == nil {
 		return errors.New("VCT: TPM work signer is nil")

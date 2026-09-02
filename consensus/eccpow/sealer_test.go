@@ -77,6 +77,14 @@ func TestRemoteNotify(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatalf("notification timed out")
 	}
+	api := &API{ecc: ecc}
+	work, err := api.GetWork()
+	if err != nil {
+		t.Fatalf("remote GetWork failed: %v", err)
+	}
+	if want := ecc.SealHash(header).Hex(); work[0] != want {
+		t.Fatalf("GetWork hash mismatch: have %s, want %s", work[0], want)
+	}
 }
 
 // Tests that pushing work packages fast to the miner doesn't cause any data race

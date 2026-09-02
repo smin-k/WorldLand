@@ -112,8 +112,10 @@ func (beacon *Beacon) VerifyHeader(chain consensus.ChainHeaderReader, header *ty
 		return err
 	}
 
-	//wordland hardfork
-	if chain.Config().IsWorldland(header.Number) {
+	// WorldLand keeps proof-of-work/VCT headers on the embedded engine even on
+	// configurations that also carry a terminal total difficulty. A genuine
+	// post-merge header is still verified by the beacon rules below.
+	if chain.Config().IsWorldland(header.Number) && !beacon.IsPoSHeader(header) {
 		return beacon.ethone.VerifyHeader(chain, header, seal)
 	}
 
@@ -136,93 +138,15 @@ func (beacon *Beacon) VerifyHeader(chain consensus.ChainHeaderReader, header *ty
 // VerifyHeaders expect the headers to be ordered and continuous.
 // have to update
 func (beacon *Beacon) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*types.Header, seals []bool) (chan<- struct{}, <-chan error) {
-	//wordland hardfork
-	//VerifyHeaders expect the headers to be ordered
 	if !beacon.IsPoSHeader(headers[len(headers)-1]) {
-		if !chain.Config().IsWorldland(headers[len(headers)-1].Number) {
-			return beacon.ethone.VerifyHeaders(chain, headers, seals)
-		}
-	}
-
-	/////////////////////////////////////////////////////// wordland start ///////////////////////////////////////////////////////
-	var (
-		preHeaders  []*types.Header
-		postHeaders []*types.Header
-		preSeals    []bool
-		postSeals   []bool
-	)
-
-	for index, header := range headers {
-		if chain.Config().IsWorldland(header.Number) {
-			preHeaders = headers[:index]
-			postHeaders = headers[index:]
-			preSeals = seals[:index]
-			postSeals = seals[:index]
-			break
-		}
-	}
-
-	if len(preHeaders) == 0 {
 		return beacon.ethone.VerifyHeaders(chain, headers, seals)
 	}
 
 	var (
-		abort   = make(chan struct{})
-		results = make(chan error, len(headers))
-	)
-	go func() {
-		var (
-			old, new, out      = 0, len(preHeaders), 0
-			errors             = make([]error, len(headers))
-			done               = make([]bool, len(headers))
-			oldDone, oldResult = beacon.ethone.VerifyHeaders(chain, preHeaders, preSeals)
-			newDone, newResult = beacon.ethone.VerifyHeaders(chain, postHeaders, postSeals)
-		)
-
-		/* need to update
-		if index, err := verifyTerminalPoWBlock(chain, preHeaders); err != nil {
-			// Mark all subsequent pow headers with the error.
-			for i := index; i < len(preHeaders); i++ {
-				errors[i], done[i] = err, true
-			}
-		}
-		need to update */
-
-		// Collect the results
-		for {
-			for ; done[out]; out++ {
-				results <- errors[out]
-				if out == len(headers)-1 {
-					return
-				}
-			}
-			select {
-			case err := <-oldResult:
-				if !done[old] { // skip TTD-verified failures
-					errors[old], done[old] = err, true
-				}
-				old++
-			case err := <-newResult:
-				errors[new], done[new] = err, true
-				new++
-			case <-abort:
-				close(oldDone)
-				close(newDone)
-				return
-			}
-		}
-	}()
-	return abort, results
-
-	/////////////////////////////////////////////////////// wordland end ///////////////////////////////////////////////////
-
-	/* redeclared err
-	var (
 		preHeaders  []*types.Header
 		postHeaders []*types.Header
 		preSeals    []bool
 	)
-	*/
 
 	for index, header := range headers {
 		if beacon.IsPoSHeader(header) {
@@ -251,12 +175,10 @@ func (beacon *Beacon) VerifyHeaders(chain consensus.ChainHeaderReader, headers [
 
 	// The transition point exists in the middle, separate the headers
 	// into two batches and apply different verification rules for them.
-	/* redeclare err
 	var (
 		abort   = make(chan struct{})
 		results = make(chan error, len(headers))
 	)
-	*/
 
 	go func() {
 		var (

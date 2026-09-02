@@ -240,6 +240,9 @@ func GenerateChain(config *params.ChainConfig, parent *types.Block, engine conse
 			}
 		}
 		// Mutate the state and block according to any hard-fork specs
+		if err := ApplyTPMRegistryFork(config, b.header.Number, statedb); err != nil {
+			panic(err)
+		}
 		if daoBlock := config.DAOForkBlock; daoBlock != nil {
 			limit := new(big.Int).Add(daoBlock, params.DAOForkExtraRange)
 			if b.header.Number.Cmp(daoBlock) >= 0 && b.header.Number.Cmp(limit) < 0 {

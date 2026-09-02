@@ -120,3 +120,19 @@ func TestCheckCompatibleRejectsVCTConsensusParameterMismatch(t *testing.T) {
 		t.Fatalf("VCT parameter mismatch not rejected at activation: %v", err)
 	}
 }
+
+func TestCheckCompatibleRejectsVCTSeedDelayMismatch(t *testing.T) {
+	stored := &ChainConfig{VCTBlock: big.NewInt(100), Vct: &VctConfig{SeedDelay: 1}}
+	legacy := &ChainConfig{VCTBlock: big.NewInt(100), Vct: &VctConfig{}}
+	if err := stored.CheckCompatible(legacy, 100); err != nil {
+		t.Fatalf("zero and one seed delays should be compatible: %v", err)
+	}
+	updated := &ChainConfig{VCTBlock: big.NewInt(100), Vct: &VctConfig{SeedDelay: 4}}
+	if err := stored.CheckCompatible(updated, 99); err != nil {
+		t.Fatalf("future seed-delay mismatch rejected before activation: %v", err)
+	}
+	err := stored.CheckCompatible(updated, 100)
+	if err == nil || err.What != "VCT seed delay" || err.RewindTo != 99 {
+		t.Fatalf("seed-delay mismatch not rejected at activation: %v", err)
+	}
+}

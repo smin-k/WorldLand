@@ -15,7 +15,9 @@ import (
 )
 
 const (
-	CertificationVersion = 1
+	CertificationVersion         = 1
+	DefaultRSAEKHandle           = uint32(0x81010001)
+	DefaultRSAEKCertificateIndex = uint32(0x01c00002)
 
 	tpmGeneratedValue  = 0xff544347
 	tpmSTAttestCertify = 0x8017
@@ -55,6 +57,45 @@ type KeyCertification struct {
 type KeyCertifier interface {
 	CertifyWorkKey(attestationKeyName string, create bool, challenge []byte) (*KeyCertification, error)
 }
+
+// EnrollmentIdentity contains the public TPM identity material required by a
+// remote registration validator. All fields are public; no private key or
+// authorization value is exported.
+type EnrollmentIdentity struct {
+	EKCertificateDER      []byte `json:"ekCertificateDER"`
+	EKPublicArea          []byte `json:"ekPublicArea"`
+	EKName                []byte `json:"ekName"`
+	AttestationPublicKey  []byte `json:"attestationPublicKey"`
+	AttestationPublicArea []byte `json:"attestationPublicArea"`
+	AttestationName       []byte `json:"attestationName"`
+}
+
+// CredentialActivator is implemented by TPM backends capable of returning
+// the secret from a verifier-created MakeCredential challenge.
+type CredentialActivator interface {
+	EnrollmentIdentity(attestationKeyName string, create bool, ekHandle, ekCertificateIndex uint32) (*EnrollmentIdentity, error)
+	ActivateCredential(attestationKeyName string, ekHandle uint32, credentialBlob, encryptedSecret []byte) ([]byte, error)
+}
+
+// ParsePublicArea returns the public key and canonical TPM Name represented by
+// a TPMT_PUBLIC byte string.
+func ParsePublicArea(area []byte) (interface{}, []byte, error) {
+	return parseTPMPublicArea(area)
+}
+
+// VerifyPublicAreaAttributes checks the required and forbidden TPMA_OBJECT bits.
+func VerifyPublicAreaAttributes(area []byte, required, forbidden uint32) error {
+	return verifyTPMObjectAttributes(area, required, forbidden)
+}
+
+const (
+	ObjectFixedTPM            = tpmaObjectFixedTPM
+	ObjectFixedParent         = tpmaObjectFixedParent
+	ObjectSensitiveDataOrigin = tpmaObjectSensitiveDataOrigin
+	ObjectRestricted          = tpmaObjectRestricted
+	ObjectDecrypt             = tpmaObjectDecrypt
+	ObjectSignEncrypt         = tpmaObjectSignEncrypt
+)
 
 // VerifyKeyCertification checks the TPM statement, challenge, public-area
 // names and AIK signature. It intentionally does not claim that the AIK is

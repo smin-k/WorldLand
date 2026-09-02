@@ -17,6 +17,7 @@
 package miner
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/big"
@@ -30,6 +31,7 @@ import (
 	"github.com/cryptoecc/WorldLand/core"
 	"github.com/cryptoecc/WorldLand/core/state"
 	"github.com/cryptoecc/WorldLand/core/types"
+	"github.com/cryptoecc/WorldLand/crypto"
 	"github.com/cryptoecc/WorldLand/event"
 	"github.com/cryptoecc/WorldLand/log"
 	"github.com/cryptoecc/WorldLand/params"
@@ -225,6 +227,9 @@ type worker struct {
 	pendingMu    sync.RWMutex
 	pendingTasks map[common.Hash]*task
 
+	privateTxMu sync.RWMutex
+	privateTxs  map[uint64][]*types.Transaction
+
 	snapshotMu       sync.RWMutex // The lock used to protect the snapshots below
 	snapshotBlock    *types.Block
 	snapshotReceipts types.Receipts
@@ -264,6 +269,7 @@ func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus
 		remoteUncles:       make(map[common.Hash]*types.Block),
 		unconfirmed:        newUnconfirmedBlocks(eth.BlockChain(), sealingLogAtDepth),
 		pendingTasks:       make(map[common.Hash]*task),
+		privateTxs:         make(map[uint64][]*types.Transaction),
 		txsCh:              make(chan core.NewTxsEvent, txChanSize),
 		chainHeadCh:        make(chan core.ChainHeadEvent, chainHeadChanSize),
 		chainSideCh:        make(chan core.ChainSideEvent, chainSideChanSize),
@@ -1034,6 +1040,9 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 		log.Error("Failed to create sealing context", "err", err)
 		return nil, err
 	}
+	if err := core.ApplyTPMRegistryFork(w.chainConfig, header.Number, env.state); err != nil {
+		return nil, err
+	}
 	// Accumulate the uncles for the sealing work only if it's allowed.
 	if !genParams.noUncle {
 		commitUncles := func(blocks map[common.Hash]*types.Block) {
@@ -1084,6 +1093,100 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 	return nil
 }
 
+// submitPrivateEnrollmentTransaction stages a transaction only for one local
+// candidate height. It is never added to the public transaction pool.
+func (w *worker) submitPrivateEnrollmentTransaction(target uint64, tx *types.Transaction) error {
+	if tx == nil || tx.To() == nil {
+		return errors.New("miner: invalid private enrollment transaction")
+	}
+	head := w.chain.CurrentBlock().NumberU64()
+	if target != head+1 {
+		return fmt.Errorf("miner: target block %d is not next canonical height %d", target, head+1)
+	}
+	w.mu.RLock()
+	coinbase := w.coinbase
+	w.mu.RUnlock()
+	signer := types.MakeSigner(w.chainConfig, new(big.Int).SetUint64(target))
+	sender, err := types.Sender(signer, tx)
+	if err != nil {
+		return fmt.Errorf("miner: recover private transaction sender: %w", err)
+	}
+	if coinbase == (common.Address{}) || sender != coinbase {
+		return fmt.Errorf("miner: private transaction sender %s is not coinbase %s", sender, coinbase)
+	}
+	registry := common.HexToAddress("0x0000000000000000000000000000000000000801")
+	if w.chainConfig.TPMRegistry != nil && w.chainConfig.TPMRegistry.Address != (common.Address{}) {
+		registry = w.chainConfig.TPMRegistry.Address
+	}
+	publishSelector := crypto.Keccak256([]byte("publishProducerChallenge(bytes32,bytes,bytes,bytes32,bytes)"))[:4]
+	approveSelector := crypto.Keccak256([]byte("approveProducerSlot(bytes32,uint64,bytes32,bytes)"))[:4]
+	if *tx.To() != registry || len(tx.Data()) < 4 ||
+		(!bytes.Equal(tx.Data()[:4], publishSelector) && !bytes.Equal(tx.Data()[:4], approveSelector)) {
+		return errors.New("miner: transaction is not a producer enrollment call")
+	}
+	w.privateTxMu.Lock()
+	for height := range w.privateTxs {
+		if height < target {
+			delete(w.privateTxs, height)
+		}
+	}
+	for _, existing := range w.privateTxs[target] {
+		if existing.Hash() == tx.Hash() || existing.Nonce() == tx.Nonce() {
+			w.privateTxMu.Unlock()
+			return errors.New("miner: duplicate private enrollment transaction")
+		}
+	}
+	w.privateTxs[target] = append(w.privateTxs[target], tx)
+	w.privateTxMu.Unlock()
+	// Abort the old template immediately; otherwise it could win without the
+	// newly staged challenge before the normal recommit timer fires.
+	select {
+	case w.startCh <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (w *worker) privateEnrollmentTransactions(target uint64) []*types.Transaction {
+	w.privateTxMu.RLock()
+	defer w.privateTxMu.RUnlock()
+	return append([]*types.Transaction(nil), w.privateTxs[target]...)
+}
+
+func (w *worker) commitPrivateEnrollmentTransactions(env *environment) {
+	transactions := w.privateEnrollmentTransactions(env.header.Number.Uint64())
+	if len(transactions) == 0 {
+		return
+	}
+	if env.gasPool == nil {
+		env.gasPool = new(core.GasPool).AddGas(env.header.GasLimit)
+	}
+	for _, tx := range transactions {
+		snapshot := env.state.Snapshot()
+		gasBefore := *env.gasPool
+		gasUsedBefore := env.header.GasUsed
+		txCountBefore := len(env.txs)
+		receiptCountBefore := len(env.receipts)
+		env.state.Prepare(tx.Hash(), env.tcount)
+		if _, err := w.commitTransaction(env, tx); err != nil {
+			*env.gasPool = gasBefore
+			env.header.GasUsed = gasUsedBefore
+			log.Warn("Skipping private producer challenge", "hash", tx.Hash(), "err", err)
+			continue
+		}
+		if env.receipts[len(env.receipts)-1].Status == 0 {
+			env.state.RevertToSnapshot(snapshot)
+			*env.gasPool = gasBefore
+			env.header.GasUsed = gasUsedBefore
+			env.txs = env.txs[:txCountBefore]
+			env.receipts = env.receipts[:receiptCountBefore]
+			log.Warn("Skipping reverted private producer transaction", "hash", tx.Hash())
+			continue
+		}
+		env.tcount++
+	}
+}
+
 // generateWork generates a sealing block based on the given parameters.
 func (w *worker) generateWork(params *generateParams) (*types.Block, error) {
 	work, err := w.prepareWork(params)
@@ -1119,12 +1222,16 @@ func (w *worker) commitWork(interrupt *int32, noempty bool, timestamp int64) {
 	if err != nil {
 		return
 	}
+	privateEnrollment := w.privateEnrollmentTransactions(work.header.Number.Uint64())
 	// Create an empty block based on temporary copied state for
 	// sealing in advance without waiting block execution finished.
-	if !noempty && atomic.LoadUint32(&w.noempty) == 0 {
+	if !noempty && atomic.LoadUint32(&w.noempty) == 0 && len(privateEnrollment) == 0 {
 		w.commit(work.copy(), nil, false, start)
 	}
 
+	// Producer challenges must precede public-pool transactions so their nonce
+	// and exact target height remain deterministic.
+	w.commitPrivateEnrollmentTransactions(work)
 	// Fill pending transactions from the txpool
 	err = w.fillTransactions(interrupt, work)
 	if errors.Is(err, errBlockInterruptedByNewHead) {

@@ -18,139 +18,56 @@ package eccpow
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt"
 	"math/big"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/cryptoecc/WorldLand/common"
-	"github.com/cryptoecc/WorldLand/common/math"
 	"github.com/cryptoecc/WorldLand/core/types"
 	"github.com/cryptoecc/WorldLand/params"
 )
 
-type diffTest struct {
-	ParentTimestamp    uint64
-	ParentDifficulty   *big.Int
-	CurrentTimestamp   uint64
-	CurrentBlocknumber *big.Int
-	CurrentDifficulty  *big.Int
+type difficultyTestChain struct {
+	config *params.ChainConfig
 }
 
-func (d *diffTest) UnmarshalJSON(b []byte) (err error) {
-	var ext struct {
-		ParentTimestamp    string
-		ParentDifficulty   string
-		CurrentTimestamp   string
-		CurrentBlocknumber string
-		CurrentDifficulty  string
-	}
-	if err := json.Unmarshal(b, &ext); err != nil {
-		return err
-	}
-
-	d.ParentTimestamp = math.MustParseUint64(ext.ParentTimestamp)
-	d.ParentDifficulty = math.MustParseBig256(ext.ParentDifficulty)
-	d.CurrentTimestamp = math.MustParseUint64(ext.CurrentTimestamp)
-	d.CurrentBlocknumber = math.MustParseBig256(ext.CurrentBlocknumber)
-	d.CurrentDifficulty = math.MustParseBig256(ext.CurrentDifficulty)
-
-	return nil
-}
+func (c *difficultyTestChain) Config() *params.ChainConfig                 { return c.config }
+func (c *difficultyTestChain) CurrentHeader() *types.Header                { return nil }
+func (c *difficultyTestChain) GetHeader(common.Hash, uint64) *types.Header { return nil }
+func (c *difficultyTestChain) GetHeaderByNumber(uint64) *types.Header      { return nil }
+func (c *difficultyTestChain) GetHeaderByHash(common.Hash) *types.Header   { return nil }
+func (c *difficultyTestChain) GetTd(common.Hash, uint64) *big.Int          { return nil }
 
 func TestCalcDifficulty(t *testing.T) {
-	file, err := os.Open(filepath.Join("..", "..", "tests", "testdata", "BasicTests", "difficulty.json"))
-	if err != nil {
-		t.Skip(err)
+	parent := &types.Header{
+		Number:     big.NewInt(7),
+		Time:       1_000,
+		Difficulty: new(big.Int).Set(MinimumDifficulty),
 	}
-	defer file.Close()
+	timestamp := parent.Time + uint64(BlockGenerationTime.Int64())
+	chain := &difficultyTestChain{config: &params.ChainConfig{}}
+	ecc := &ECC{}
 
-	tests := make(map[string]diffTest)
-	err = json.NewDecoder(file).Decode(&tests)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	config := &params.ChainConfig{HomesteadBlock: big.NewInt(1150000)}
-
-	for name, test := range tests {
-		number := new(big.Int).Sub(test.CurrentBlocknumber, big.NewInt(1))
-		diff := CalcDifficulty(config, test.CurrentTimestamp, &types.Header{
-			Number:     number,
-			Time:       test.ParentTimestamp,
-			Difficulty: test.ParentDifficulty,
-		})
-		if diff.Cmp(test.CurrentDifficulty) != 0 {
-			t.Error(name, "failed. Expected", test.CurrentDifficulty, "and calculated", diff)
-		}
+	got := ecc.CalcDifficulty(chain, timestamp, parent)
+	want := MakeLDPCDifficultyCalculator()(timestamp, parent)
+	if got.Cmp(want) != 0 {
+		t.Fatalf("frontier ECCPoW difficulty = %v, want %v", got, want)
 	}
 }
 
 func TestDecodingVerification(t *testing.T) {
-	for i := 0; i < 8; i++ {
-		ecc := ECC{}
-		header := new(types.Header)
-		header.Difficulty = ProbToDifficulty(Table[0].miningProb)
-		hash := ecc.SealHash(header).Bytes()
+	ecc := ECC{}
+	header := &types.Header{
+		Difficulty: ProbToDifficulty(Table[0].miningProb),
+		Nonce:      types.EncodeNonce(1_751_289),
+		MixDigest:  common.HexToHash("0xe19d1062281167c03d5ebbcaf4bf3c803449c111b2af73d8c2c395b01645597f"),
+	}
 
-		_, hashVector, outputWord, LDPCNonce, digest := RunOptimizedConcurrencyLDPC(header, hash)
-
-		headerForTest := types.CopyHeader(header)
-		headerForTest.MixDigest = common.BytesToHash(digest)
-		headerForTest.Nonce = types.EncodeNonce(LDPCNonce)
-		hashForTest := ecc.SealHash(headerForTest).Bytes()
-
-		flag, hashVectorOfVerification, outputWordOfVerification, digestForValidation := VerifyOptimizedDecoding(headerForTest, hashForTest)
-
-		encodedDigestForValidation := common.BytesToHash(digestForValidation)
-
-		//fmt.Printf("%+v\n", header)
-		//fmt.Printf("Hash : %v\n", hash)
-		//fmt.Println()
-
-		//fmt.Printf("%+v\n", headerForTest)
-		//fmt.Printf("headerForTest : %v\n", headerForTest)
-		//fmt.Println()
-
-		// * means padding for compare easily
-		if flag && bytes.Equal(headerForTest.MixDigest[:], encodedDigestForValidation[:]) {
-			fmt.Printf("Hash vector ** ************ : %v\n", hashVector)
-			fmt.Printf("Hash vector of verification : %v\n", hashVectorOfVerification)
-
-			fmt.Printf("Outputword ** ************ : %v\n", outputWord)
-			fmt.Printf("Outputword of verification : %v\n", outputWordOfVerification)
-
-			fmt.Printf("LDPC Nonce : %v\n", LDPCNonce)
-			fmt.Printf("Digest : %v\n", headerForTest.MixDigest[:])
-			/*
-				t.Logf("Hash vector : %v\n", hashVector)
-				t.Logf("Outputword : %v\n", outputWord)
-				t.Logf("LDPC Nonce : %v\n", LDPCNonce)
-				t.Logf("Digest : %v\n", header.MixDigest[:])
-			*/
-		} else {
-			fmt.Printf("Hash vector ** ************ : %v\n", hashVector)
-			fmt.Printf("Hash vector of verification : %v\n", hashVectorOfVerification)
-
-			fmt.Printf("Outputword ** ************ : %v\n", outputWord)
-			fmt.Printf("Outputword of verification : %v\n", outputWordOfVerification)
-
-			fmt.Printf("flag : %v\n", flag)
-			fmt.Printf("Digest compare result : %v\n", bytes.Equal(headerForTest.MixDigest[:], encodedDigestForValidation[:]))
-			fmt.Printf("Digest *** ********** : %v\n", headerForTest.MixDigest[:])
-			fmt.Printf("Digest for validation : %v\n", encodedDigestForValidation)
-
-			t.Errorf("Test Fail")
-			/*
-				t.Errorf("flag : %v\n", flag)
-				t.Errorf("Digest compare result : %v", bytes.Equal(header.MixDigest[:], digestForValidation)
-				t.Errorf("Digest : %v\n", digest)
-				t.Errorf("Digest for validation : %v\n", digestForValidation)
-			*/
-		}
-		//t.Logf("\n")
-		fmt.Println()
+	valid, _, _, digest := VerifyOptimizedDecoding(header, ecc.SealHash(header).Bytes())
+	if !valid {
+		t.Fatal("known valid legacy ECCPoW decoding was rejected")
+	}
+	decodedDigest := common.BytesToHash(digest)
+	if !bytes.Equal(header.MixDigest[:], decodedDigest[:]) {
+		t.Fatalf("decoded digest = %x, want %x", decodedDigest[:], header.MixDigest[:])
 	}
 }

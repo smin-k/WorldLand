@@ -190,6 +190,12 @@ func (miner *Miner) SetRecommitInterval(interval time.Duration) {
 	miner.worker.setRecommitInterval(interval)
 }
 
+// SubmitPrivateEnrollmentTransaction stages a signed producer challenge for
+// the next locally mined block without gossiping it through the txpool.
+func (miner *Miner) SubmitPrivateEnrollmentTransaction(target uint64, tx *types.Transaction) error {
+	return miner.worker.submitPrivateEnrollmentTransaction(target, tx)
+}
+
 // Pending returns the currently pending block and associated state.
 func (miner *Miner) Pending() (*types.Block, *state.StateDB) {
 	return miner.worker.pending()

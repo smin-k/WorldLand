@@ -81,7 +81,12 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		ecc.rand = rand.New(rand.NewSource(seed.Int64()))
 	}
 	ecc.lock.Unlock()
-	if threads == 0 {
+	// A nil chain is the remote-work-only form used by the sealer API and its
+	// callers. It cannot select a fork-specific local mining algorithm, so do
+	// not start local workers for that request.
+	if chain == nil {
+		threads = 0
+	} else if threads == 0 {
 		threads = runtime.NumCPU()
 	}
 	if threads < 0 {
@@ -95,15 +100,18 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		pend   sync.WaitGroup
 		locals = make(chan *types.Block)
 	)
-	
+
 	for i := 0; i < threads; i++ {
 		pend.Add(1)
 		go func(id int, nonce uint64) {
 			defer pend.Done()
-			//ecc.mine(block, id, nonce, abort, locals)
-			if chain.Config().IsSeoul(block.Header().Number){
+			// Remote-sealer callers historically pass a nil chain because the
+			// notification path needs only the block work package. Preserve the
+			// legacy mining path in that case; fork selection requires an actual
+			// chain configuration.
+			if chain != nil && chain.Config().IsSeoul(block.Header().Number) {
 				ecc.mine_seoul(block, id, nonce, abort, locals)
-			} else{
+			} else {
 				ecc.mine(block, id, nonce, abort, locals)
 			}
 		}(i, uint64(ecc.rand.Int63()))
@@ -149,8 +157,8 @@ func (ecc *ECC) mine(block *types.Block, id int, seed uint64, abort chan struct{
 	// Start generating random nonces until we abort or find a good one
 	var (
 		total_attempts = int64(0)
-		attempts = int64(0)
-		nonce    = seed
+		attempts       = int64(0)
+		nonce          = seed
 	)
 	logger := log.New("miner", id)
 	logger.Trace("Started ecc search for new nonces", "seed", seed)
@@ -187,7 +195,7 @@ search:
 				header = types.CopyHeader(header)
 				header.MixDigest = common.BytesToHash(digest)
 				header.Nonce = types.EncodeNonce(LDPCNonce)
-				
+
 				//convert codeword
 				var codeword []byte
 				var codeVal byte
@@ -228,8 +236,8 @@ func (ecc *ECC) mine_seoul(block *types.Block, id int, seed uint64, abort chan s
 	// Start generating random nonces until we abort or find a good one
 	var (
 		total_attempts = int64(0)
-		attempts = int64(0)
-		nonce    = seed
+		attempts       = int64(0)
+		nonce          = seed
 	)
 	logger := log.New("miner", id)
 	logger.Trace("Started ecc search for new nonces", "seed", seed)
@@ -256,7 +264,7 @@ search:
 				ecc.hashrate.Mark(attempts)
 				attempts = 0
 			}
-		
+
 			digest := make([]byte, 40)
 			copy(digest, hash)
 			binary.LittleEndian.PutUint64(digest[32:], nonce)
@@ -265,7 +273,7 @@ search:
 
 			goRoutineHashVector := generateHv(parameters, digest)
 			goRoutineHashVector, goRoutineOutputWord, _ := OptimizedDecodingSeoul(parameters, goRoutineHashVector, H, rowInCol, colInRow)
-			
+
 			flag, _ := MakeDecision_Seoul(header, colInRow, goRoutineOutputWord)
 			//fmt.Printf("nonce: %v\n", nonce)
 			//fmt.Printf("nonce: %v\n", weight)
@@ -285,7 +293,7 @@ search:
 				header.CodeLength = uint64(parameters.n)
 				header.MixDigest = common.BytesToHash(digest)
 				header.Nonce = types.EncodeNonce(nonce)
-				
+
 				//convert codeword
 				var codeword []byte
 				var codeVal byte
@@ -318,7 +326,6 @@ search:
 	}
 }
 
-
 //GPU MINING... NEED TO UPDTAE
 // This is the timeout for HTTP requests to notify external miners.
 const remoteSealerTimeout = 1 * time.Second
@@ -332,7 +339,7 @@ type remoteSealer struct {
 	cancelNotify context.CancelFunc // cancels all notification requests
 	reqWG        sync.WaitGroup     // tracks notification request goroutines
 
-	ecc       *ECC
+	ecc          *ECC
 	noverify     bool
 	notifyURLs   []string
 	results      chan<- *types.Block
@@ -378,7 +385,7 @@ type sealWork struct {
 func startRemoteSealer(ecc *ECC, urls []string, noverify bool) *remoteSealer {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &remoteSealer{
-		ecc:       ecc,
+		ecc:          ecc,
 		noverify:     noverify,
 		notifyURLs:   urls,
 		notifyCtx:    ctx,
@@ -581,4 +588,3 @@ func (s *remoteSealer) submitWork(nonce types.BlockNonce, mixDigest common.Hash,
 	s.ecc.config.Log.Warn("Work submitted is too old", "number", solution.NumberU64(), "sealhash", sealhash, "hash", solution.Hash())
 	return false
 }
-

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/cryptoecc/WorldLand/crypto/tpmwork"
@@ -21,6 +22,7 @@ func main() {
 	keyName := flag.String("key", "WorldLand-TPM-Work-Test", "persisted platform-TPM work key name")
 	create := flag.Bool("create", false, "create the non-exportable TPM key if missing")
 	iterations := flag.Int("n", 100, "number of sequential signatures")
+	clients := flag.Int("clients", 1, "number of concurrent handles to the same persisted TPM key")
 	probeEvidence := flag.Bool("evidence", false, "print read-only platform and key attestation properties")
 	probeAttestationEvidence := flag.Bool("aikevidence", false, "print read-only identity-binding properties for -aik")
 	certify := flag.Bool("certify", false, "create and locally verify a nonce-bound TPM2_Certify proof")
@@ -32,33 +34,56 @@ func main() {
 		fmt.Fprintln(os.Stderr, "-n must be positive")
 		os.Exit(2)
 	}
-
-	signer, err := tpmwork.OpenPlatformSigner(*keyName, *create)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	if *clients <= 0 || *clients > *iterations {
+		fmt.Fprintln(os.Stderr, "-clients must be positive and no greater than -n")
+		os.Exit(2)
 	}
-	defer signer.Close()
 
-	latencies := make([]time.Duration, 0, *iterations)
+	signers := make([]*tpmwork.PlatformSigner, *clients)
+	for i := range signers {
+		signer, err := tpmwork.OpenPlatformSigner(*keyName, *create && i == 0)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		signers[i] = signer
+		defer signer.Close()
+	}
+	signer := signers[0]
+
+	latencies := make([]time.Duration, *iterations)
+	errorsByNonce := make([]error, *iterations)
 	started := time.Now()
-	for nonce := 0; nonce < *iterations; nonce++ {
-		var input [8]byte
-		binary.BigEndian.PutUint64(input[:], uint64(nonce))
-		digest := sha256.Sum256(append([]byte("WORLDLAND_TPM_BENCH_V1"), input[:]...))
-		before := time.Now()
-		signature, err := signer.SignDigest(digest[:])
-		latencies = append(latencies, time.Since(before))
+	var workers sync.WaitGroup
+	for client, clientSigner := range signers {
+		workers.Add(1)
+		go func(client int, clientSigner *tpmwork.PlatformSigner) {
+			defer workers.Done()
+			for nonce := client; nonce < *iterations; nonce += *clients {
+				var input [8]byte
+				binary.BigEndian.PutUint64(input[:], uint64(nonce))
+				digest := sha256.Sum256(append([]byte("WORLDLAND_TPM_BENCH_V1"), input[:]...))
+				before := time.Now()
+				signature, err := clientSigner.SignDigest(digest[:])
+				latencies[nonce] = time.Since(before)
+				if err != nil {
+					errorsByNonce[nonce] = err
+					continue
+				}
+				if !tpmwork.VerifyDigest(clientSigner.PublicKey(), digest[:], signature) {
+					errorsByNonce[nonce] = fmt.Errorf("signature did not verify")
+				}
+			}
+		}(client, clientSigner)
+	}
+	workers.Wait()
+	elapsed := time.Since(started)
+	for nonce, err := range errorsByNonce {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "signature %d failed: %v\n", nonce, err)
 			os.Exit(1)
 		}
-		if !tpmwork.VerifyDigest(signer.PublicKey(), digest[:], signature) {
-			fmt.Fprintf(os.Stderr, "signature %d did not verify\n", nonce)
-			os.Exit(1)
-		}
 	}
-	elapsed := time.Since(started)
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 
 	fmt.Printf("key=%s\n", *keyName)
@@ -129,6 +154,7 @@ func main() {
 		}
 	}
 	fmt.Printf("signatures=%d\n", *iterations)
+	fmt.Printf("clients=%d\n", *clients)
 	fmt.Printf("elapsed=%s\n", elapsed)
 	fmt.Printf("signaturesPerSecond=%.3f\n", float64(*iterations)/elapsed.Seconds())
 	fmt.Printf("latencyP50=%s\n", percentile(latencies, 0.50))

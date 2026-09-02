@@ -13,7 +13,7 @@ import (
 	"github.com/cryptoecc/WorldLand/crypto"
 )
 
-// TPMRegistryAddress is the reserved predeploy address for the TPM DID registry.
+// TPMRegistryAddress is the reserved predeploy address for TPM-bound consensus identities.
 // The prototype contract source lives in contracts/tpmregistry/contract.
 var TPMRegistryAddress = common.HexToAddress("0x0000000000000000000000000000000000000801")
 
@@ -69,23 +69,23 @@ func readTPMRegistration(st *state.StateDB, did common.Hash) (tpmRegistration, e
 
 func verifyTPMRegistration(st *state.StateDB, did common.Hash, controller common.Address, workPublicKey, vrfPublicKey []byte) error {
 	if did == (common.Hash{}) {
-		return errors.New("VCT: TPM DID is zero")
+		return errors.New("VCT: TPM identity is zero")
 	}
 	reg, err := readTPMRegistration(st, did)
 	if err != nil {
 		return err
 	}
 	if !reg.Active {
-		return fmt.Errorf("VCT: TPM DID %s is not active", did.Hex())
+		return fmt.Errorf("VCT: TPM identity %s is not active", did.Hex())
 	}
 	if reg.Controller != controller {
-		return fmt.Errorf("VCT: TPM DID controller %s != coinbase %s", reg.Controller.Hex(), controller.Hex())
+		return fmt.Errorf("VCT: TPM identity controller %s != coinbase %s", reg.Controller.Hex(), controller.Hex())
 	}
 	if want := crypto.Keccak256Hash(workPublicKey); reg.WorkKeyHash != want {
 		return errors.New("VCT: TPM work public key does not match registry")
 	}
 	if want := crypto.Keccak256Hash(vrfPublicKey); reg.VRFKeyHash != want {
-		return errors.New("VCT: VRF public key does not match TPM DID registry")
+		return errors.New("VCT: VRF public key does not match TPM identity registry")
 	}
 	return nil
 }

@@ -39,9 +39,9 @@ type API struct {
 //   result[2] - 32 bytes hex encoded boundary condition ("target"), 2^256/difficulty
 //   result[3] - hex encoded block number
 func (api *API) GetWork() ([4]string, error) {
-	//if api.ecc.config.PowMode != ModeNormal && api.ecc.config.PowMode != ModeTest {
-	//	return [4]string{}, errors.New("not supported")
-	//}
+	if api.ecc.remote == nil {
+		return [4]string{}, errors.New("not supported")
+	}
 
 	var (
 		workCh = make(chan [4]string, 1)
@@ -49,7 +49,7 @@ func (api *API) GetWork() ([4]string, error) {
 	)
 
 	select {
-	case api.ecc.fetchWorkCh <- &sealWork{errc: errc, res: workCh}:
+	case api.ecc.remote.fetchWorkCh <- &sealWork{errc: errc, res: workCh}:
 	case <-api.ecc.remote.exitCh:
 		return [4]string{}, erreccStopped
 	}
@@ -66,14 +66,14 @@ func (api *API) GetWork() ([4]string, error) {
 // It returns an indication if the work was accepted.
 // Note either an invalid solution, a stale work a non-existent work will return false.
 func (api *API) SubmitWork(nonce types.BlockNonce, hash, digest common.Hash) bool {
-	//if api.ecc.config.PowMode != ModeNormal && api.ecc.config.PowMode != ModeTest {
-	//	return false
-	//}
+	if api.ecc.remote == nil {
+		return false
+	}
 
 	var errc = make(chan error, 1)
 
 	select {
-	case api.ecc.submitWorkCh <- &mineResult{
+	case api.ecc.remote.submitWorkCh <- &mineResult{
 		nonce:     nonce,
 		mixDigest: digest,
 		hash:      hash,
@@ -94,11 +94,14 @@ func (api *API) SubmitWork(nonce types.BlockNonce, hash, digest common.Hash) boo
 // It accepts the miner hash rate and an identifier which must be unique
 // between nodes.
 func (api *API) SubmitHashRate(rate hexutil.Uint64, id common.Hash) bool {
+	if api.ecc.remote == nil {
+		return false
+	}
 
 	var done = make(chan struct{}, 1)
 
 	select {
-	case api.ecc.submitRateCh <- &hashrate{done: done, rate: uint64(rate), id: id}:
+	case api.ecc.remote.submitRateCh <- &hashrate{done: done, rate: uint64(rate), id: id}:
 	case <-api.ecc.remote.exitCh:
 		return false
 	}

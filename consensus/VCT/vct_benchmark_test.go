@@ -11,10 +11,13 @@ import (
 	"github.com/cryptoecc/WorldLand/common"
 	"github.com/cryptoecc/WorldLand/core/types"
 	"github.com/cryptoecc/WorldLand/crypto"
+	"github.com/cryptoecc/WorldLand/crypto/secp256k1"
 )
 
 var (
 	benchmarkSignature []byte
+	benchmarkProof     []byte
+	benchmarkVRFOutput [32]byte
 	benchmarkWord      []int
 	benchmarkThreshold *big.Int
 )
@@ -96,5 +99,48 @@ func BenchmarkVCTIntegerEligibilityThreshold(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Exercise an interior second; endpoints return without a root.
 		benchmarkThreshold = EligibilityThresholdAt(EligibilityBase, TimeoutStart+27)
+	}
+}
+
+func BenchmarkVCTVRFProve(b *testing.B) {
+	seckey := make([]byte, 32)
+	seckey[31] = 1
+	pubkey, err := secp256k1.VRFPubkeyFromSeckey(seckey)
+	if err != nil {
+		b.Fatal(err)
+	}
+	msg := []byte("VCT_VRF benchmark message")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		proof, output, err := VRFProve(seckey, pubkey, msg)
+		if err != nil {
+			b.Fatal(err)
+		}
+		benchmarkProof = proof
+		benchmarkVRFOutput = output
+	}
+}
+
+func BenchmarkVCTVRFVerify(b *testing.B) {
+	seckey := make([]byte, 32)
+	seckey[31] = 1
+	pubkey, err := secp256k1.VRFPubkeyFromSeckey(seckey)
+	if err != nil {
+		b.Fatal(err)
+	}
+	msg := []byte("VCT_VRF benchmark message")
+	proof, _, err := VRFProve(seckey, pubkey, msg)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		output, err := VRFVerify(pubkey, proof, msg)
+		if err != nil {
+			b.Fatal(err)
+		}
+		benchmarkVRFOutput = output
 	}
 }

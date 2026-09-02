@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"reflect"
 
 	"github.com/cryptoecc/WorldLand/common"
 	"golang.org/x/crypto/sha3"
@@ -607,12 +608,14 @@ type ChainConfig struct {
 	ShanghaiBlock       *big.Int `json:"shanghaiBlock,omitempty"`       // Shanghai switch block (nil = no fork, 0 = already on shanghai)
 	CancunBlock         *big.Int `json:"cancunBlock,omitempty"`         // Cancun switch block (nil = no fork, 0 = already on cancun)
 
-	WorldlandBlock *big.Int `json:"worldlandBlock,omitempty"` // worldrand switch block (nil = no fork, 0 = already on worldland)
-	HalvingEndTime *big.Int `json:"HalvingEndTime,omitempty"`
-	SeoulBlock     *big.Int `json:"seoulBlock,omitempty"`
-	AnnapurnaBlock *big.Int `json:"AnnapurnaBlock,omitempty"`
-	VCTBlock       *big.Int `json:"vctBlock,omitempty"`      // VCT (WIP-6) switch block (nil = no fork)
-	TPMGatedBlock  *big.Int `json:"tpmGatedBlock,omitempty"` // TPM work-signature and one-DID-one-VRF switch
+	WorldlandBlock   *big.Int           `json:"worldlandBlock,omitempty"` // worldrand switch block (nil = no fork, 0 = already on worldland)
+	HalvingEndTime   *big.Int           `json:"HalvingEndTime,omitempty"`
+	SeoulBlock       *big.Int           `json:"seoulBlock,omitempty"`
+	AnnapurnaBlock   *big.Int           `json:"AnnapurnaBlock,omitempty"`
+	VCTBlock         *big.Int           `json:"vctBlock,omitempty"`         // VCT (WIP-6) switch block (nil = no fork)
+	TPMRegistryBlock *big.Int           `json:"tpmRegistryBlock,omitempty"` // TPM registry state-migration block
+	TPMGatedBlock    *big.Int           `json:"tpmGatedBlock,omitempty"`    // TPM work-signature and one-DID-one-VRF switch
+	TPMRegistry      *TPMRegistryConfig `json:"tpmRegistry,omitempty"`
 
 	// TerminalTotalDifficulty is the amount of total difficulty reached by
 	// the network that triggers the consensus upgrade.
@@ -638,6 +641,10 @@ type EccpowConfig struct{}
 
 // VctConfig is the consensus engine config for the VCT (WIP-6) network.
 type VctConfig struct {
+	// SeedDelay selects the ancestor height committed to the VRF input. A value
+	// of d binds block h to the ancestor at max(0, h-d). Zero is interpreted as
+	// one for backwards compatibility with the original parent-bound rule.
+	SeedDelay uint64 `json:"seedDelay,omitempty"`
 	// MinEligibleBalance is retained as the wire-compatible name for B0 (in
 	// wei), the parent-state balance that grants one virtual VRF trial.
 	// floor(balance/B0) determines the trial weight; nil or zero disables
@@ -651,6 +658,41 @@ type VctConfig struct {
 	S0ForkBlock *big.Int `json:"s0ForkBlock,omitempty"`
 	// S0ForkBalance is the new B0 value applied at and after S0ForkBlock.
 	S0ForkBalance *big.Int `json:"s0ForkBalance,omitempty"`
+}
+
+func normalizedVCTSeedDelay(delay uint64) uint64 {
+	if delay == 0 {
+		return 1
+	}
+	return delay
+}
+
+// EffectiveSeedDelay returns the consensus seed delay, treating an omitted
+// value as the legacy parent-bound delay of one block.
+func (c *VctConfig) EffectiveSeedDelay() uint64 {
+	if c == nil {
+		return 1
+	}
+	return normalizedVCTSeedDelay(c.SeedDelay)
+}
+
+// TPMRegistryConfig is consensus configuration for a one-time registry
+// predeploy on an existing chain. New chains should put the same state in the
+// genesis allocation instead.
+type TPMRegistryConfig struct {
+	Address                common.Address   `json:"address"`
+	FixedCollateral        *big.Int         `json:"fixedCollateral"`
+	Governor               common.Address   `json:"governor"`
+	RegistrationTTL        uint64           `json:"registrationTTL"`
+	ActivationDelay        uint64           `json:"activationDelay"`
+	Validators             []common.Address `json:"validators"`
+	Threshold              uint16           `json:"threshold"`
+	PolicyDigest           common.Hash      `json:"policyDigest"`
+	ProducerSlotCount      uint16           `json:"producerSlotCount,omitempty"`
+	ProducerThreshold      uint16           `json:"producerThreshold,omitempty"`
+	ProducerSlotDelay      uint32           `json:"producerSlotDelay,omitempty"`
+	ProducerResponseWindow uint32           `json:"producerResponseWindow,omitempty"`
+	ProducerPolicyDigest   common.Hash      `json:"producerPolicyDigest,omitempty"`
 }
 
 // MinEligibleBalanceAt returns the wire-compatible B0 value at blockNum.
@@ -937,6 +979,17 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 	if c.TPMGatedBlock != nil && c.VCTBlock == nil {
 		return fmt.Errorf("unsupported fork ordering: tpmGatedBlock requires vctBlock")
 	}
+	if (c.TPMRegistryBlock == nil) != (c.TPMRegistry == nil) {
+		return fmt.Errorf("tpmRegistryBlock and tpmRegistry must be configured together")
+	}
+	if c.TPMRegistry != nil {
+		if err := validateTPMRegistryConfig(c.TPMRegistry); err != nil {
+			return err
+		}
+	}
+	if c.TPMRegistryBlock != nil && c.TPMGatedBlock != nil && c.TPMRegistryBlock.Cmp(c.TPMGatedBlock) >= 0 {
+		return fmt.Errorf("unsupported fork ordering: tpmRegistryBlock must precede tpmGatedBlock")
+	}
 	type fork struct {
 		name     string
 		block    *big.Int
@@ -965,6 +1018,7 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "seoulBlock", block: c.SeoulBlock, optional: true},
 		{name: "AnnapurnaBlock", block: c.AnnapurnaBlock, optional: true},
 		{name: "vctBlock", block: c.VCTBlock, optional: true},
+		{name: "tpmRegistryBlock", block: c.TPMRegistryBlock, optional: true},
 		{name: "tpmGatedBlock", block: c.TPMGatedBlock, optional: true},
 	} {
 		if lastFork.name != "" {
@@ -984,6 +1038,42 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		if !cur.optional || cur.block != nil {
 			lastFork = cur
 		}
+	}
+	return nil
+}
+
+func validateTPMRegistryConfig(config *TPMRegistryConfig) error {
+	if config.FixedCollateral == nil || config.FixedCollateral.Sign() < 0 || config.FixedCollateral.BitLen() > 256 {
+		return fmt.Errorf("invalid TPM registry fixed collateral")
+	}
+	if config.Governor == (common.Address{}) || config.RegistrationTTL == 0 {
+		return fmt.Errorf("invalid TPM registry governor or registration TTL")
+	}
+	legacyConfigured := len(config.Validators) != 0 || config.Threshold != 0 || config.PolicyDigest != (common.Hash{})
+	if legacyConfigured && (len(config.Validators) == 0 || len(config.Validators) > int(^uint16(0)) ||
+		config.Threshold == 0 || int(config.Threshold) > len(config.Validators) || config.PolicyDigest == (common.Hash{})) {
+		return fmt.Errorf("invalid TPM registry validator threshold")
+	}
+	seen := make(map[common.Address]struct{}, len(config.Validators))
+	for _, validator := range config.Validators {
+		if validator == (common.Address{}) {
+			return fmt.Errorf("invalid zero TPM registry validator")
+		}
+		if _, exists := seen[validator]; exists {
+			return fmt.Errorf("duplicate TPM registry validator %s", validator)
+		}
+		seen[validator] = struct{}{}
+	}
+	producerConfigured := config.ProducerSlotCount != 0 || config.ProducerThreshold != 0 ||
+		config.ProducerSlotDelay != 0 || config.ProducerResponseWindow != 0 ||
+		config.ProducerPolicyDigest != (common.Hash{})
+	if producerConfigured && (config.ProducerSlotCount == 0 || config.ProducerThreshold == 0 ||
+		config.ProducerThreshold > config.ProducerSlotCount || config.ProducerResponseWindow == 0 ||
+		config.ProducerPolicyDigest == (common.Hash{})) {
+		return fmt.Errorf("invalid TPM registry producer committee")
+	}
+	if !legacyConfigured && !producerConfigured {
+		return fmt.Errorf("TPM registry has no enrollment mode")
 	}
 	return nil
 }
@@ -1065,6 +1155,12 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 	if isForkIncompatible(c.TPMGatedBlock, newcfg.TPMGatedBlock, head) {
 		return newCompatError("TPM-gated fork block", c.TPMGatedBlock, newcfg.TPMGatedBlock)
 	}
+	if isForkIncompatible(c.TPMRegistryBlock, newcfg.TPMRegistryBlock, head) {
+		return newCompatError("TPM registry fork block", c.TPMRegistryBlock, newcfg.TPMRegistryBlock)
+	}
+	if (isForked(c.TPMRegistryBlock, head) || isForked(newcfg.TPMRegistryBlock, head)) && !reflect.DeepEqual(c.TPMRegistry, newcfg.TPMRegistry) {
+		return newCompatError("TPM registry configuration", c.TPMRegistryBlock, newcfg.TPMRegistryBlock)
+	}
 	if c.IsVCT(head) || newcfg.IsVCT(head) {
 		var storedVCT, newVCT VctConfig
 		if c.Vct != nil {
@@ -1078,6 +1174,8 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 			return newVCTCompatError("VCT minimum eligible balance", storedVCT.MinEligibleBalance, newVCT.MinEligibleBalance, c.VCTBlock, newcfg.VCTBlock)
 		case !configNumEqualOrZero(storedVCT.InitialEligibilityThreshold, newVCT.InitialEligibilityThreshold):
 			return newVCTCompatError("VCT initial eligibility threshold", storedVCT.InitialEligibilityThreshold, newVCT.InitialEligibilityThreshold, c.VCTBlock, newcfg.VCTBlock)
+		case normalizedVCTSeedDelay(storedVCT.SeedDelay) != normalizedVCTSeedDelay(newVCT.SeedDelay):
+			return newVCTCompatError("VCT seed delay", new(big.Int).SetUint64(storedVCT.SeedDelay), new(big.Int).SetUint64(newVCT.SeedDelay), c.VCTBlock, newcfg.VCTBlock)
 		case !configNumEqual(storedVCT.S0ForkBlock, newVCT.S0ForkBlock):
 			return newVCTCompatError("VCT S0 fork block", storedVCT.S0ForkBlock, newVCT.S0ForkBlock, c.VCTBlock, newcfg.VCTBlock)
 		case !configNumEqualOrZero(storedVCT.S0ForkBalance, newVCT.S0ForkBalance):

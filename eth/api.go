@@ -134,6 +134,26 @@ func (api *MinerAPI) SetRecommitInterval(interval int) {
 	api.e.Miner().SetRecommitInterval(time.Duration(interval) * time.Millisecond)
 }
 
+// SubmitEnrollmentChallenge stages a signed registry challenge transaction
+// exclusively in the next local candidate block. The miner namespace is a
+// private/admin API and must not be exposed to untrusted networks.
+func (api *MinerAPI) SubmitEnrollmentChallenge(target hexutil.Uint64, raw hexutil.Bytes) (common.Hash, error) {
+	return api.SubmitEnrollmentTransaction(target, raw)
+}
+
+// SubmitEnrollmentTransaction stages a challenge or producer approval in one
+// exact local candidate block without transaction-pool gossip.
+func (api *MinerAPI) SubmitEnrollmentTransaction(target hexutil.Uint64, raw hexutil.Bytes) (common.Hash, error) {
+	var transaction types.Transaction
+	if err := transaction.UnmarshalBinary(raw); err != nil {
+		return common.Hash{}, err
+	}
+	if err := api.e.Miner().SubmitPrivateEnrollmentTransaction(uint64(target), &transaction); err != nil {
+		return common.Hash{}, err
+	}
+	return transaction.Hash(), nil
+}
+
 // AdminAPI is the collection of Ethereum full node related APIs for node
 // administration.
 type AdminAPI struct {

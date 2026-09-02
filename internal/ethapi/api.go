@@ -1200,6 +1200,18 @@ func RPCMarshalHeader(head *types.Header) map[string]interface{} {
 		result["vrfSignature"] = hexutil.Bytes(head.VRFSignature)
 	}
 
+	if len(head.TPMDID) != 0 {
+		result["tpmDID"] = hexutil.Bytes(head.TPMDID)
+	}
+
+	if len(head.TPMWorkPublicKey) != 0 {
+		result["tpmWorkPublicKey"] = hexutil.Bytes(head.TPMWorkPublicKey)
+	}
+
+	if len(head.TPMWorkSignature) != 0 {
+		result["tpmWorkSignature"] = hexutil.Bytes(head.TPMWorkSignature)
+	}
+
 	if head.EligibilityThreshold != nil {
 		result["eligibilityThreshold"] = (*hexutil.Big)(head.EligibilityThreshold)
 	}

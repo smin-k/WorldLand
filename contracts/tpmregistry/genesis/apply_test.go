@@ -1,0 +1,31 @@
+package genesis
+
+import (
+	"math/big"
+	"testing"
+
+	"github.com/cryptoecc/WorldLand/common"
+	"github.com/cryptoecc/WorldLand/contracts/tpmregistry"
+	"github.com/cryptoecc/WorldLand/core"
+)
+
+func TestApply(t *testing.T) {
+	address := tpmregistry.DefaultRegistryAddress
+	config := tpmregistry.PredeployConfig{
+		Address: address, FixedCollateral: big.NewInt(100), Governor: common.HexToAddress("0x1001"),
+		RegistrationTTL: 90, ActivationDelay: 6,
+		Validators: []common.Address{common.HexToAddress("0x2001"), common.HexToAddress("0x2002")},
+		Threshold:  2, PolicyDigest: common.HexToHash("0x1234"),
+	}
+	spec := &core.Genesis{}
+	if err := Apply(spec, config); err != nil {
+		t.Fatal(err)
+	}
+	account, exists := spec.Alloc[address]
+	if !exists || len(account.Code) == 0 || len(account.Storage) == 0 {
+		t.Fatal("registry code and storage were not added to genesis")
+	}
+	if err := Apply(spec, config); err == nil {
+		t.Fatal("existing registry allocation was overwritten")
+	}
+}

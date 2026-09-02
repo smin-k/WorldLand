@@ -100,7 +100,7 @@ type Header struct {
 	// The 32-byte VRF output is interpreted as a big-endian uint256 and compared
 	// against this value. Nil means absent in legacy/pre-VCT headers.
 	EligibilityThreshold *big.Int `json:"eligibilityThreshold" rlp:"optional"`
-	// TPMDID identifies the active hardware registration used by this proposer.
+	// TPMDID is the legacy wire name for this proposer's active TPM-bound consensus identity.
 	TPMDID []byte `json:"tpmDID" rlp:"optional"`
 	// TPMWorkPublicKey is the uncompressed P-256 work key certified by the TPM registration.
 	TPMWorkPublicKey []byte `json:"tpmWorkPublicKey" rlp:"optional"`

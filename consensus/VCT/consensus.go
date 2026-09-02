@@ -238,13 +238,16 @@ func verifyPreVCTFields(header *types.Header) error {
 
 func verifyTPMFieldEra(header *types.Header, active bool) error {
 	if !active {
-		if header.TPMDID != nil || header.TPMWorkPublicKey != nil || header.TPMWorkSignature != nil {
+		// RLP must encode empty placeholders for these optional byte fields when
+		// the later EligibilityThreshold field is present. Decode therefore
+		// normalizes nil to a non-nil, zero-length slice on the wire.
+		if len(header.TPMDID) != 0 || len(header.TPMWorkPublicKey) != 0 || len(header.TPMWorkSignature) != 0 {
 			return errors.New("VCT: TPM work fields present before TPM-gated fork")
 		}
 		return nil
 	}
 	if len(header.TPMDID) != common.HashLength {
-		return fmt.Errorf("VCT: TPM DID must be %d bytes, got %d", common.HashLength, len(header.TPMDID))
+		return fmt.Errorf("VCT: TPM identity must be %d bytes, got %d", common.HashLength, len(header.TPMDID))
 	}
 	if len(header.TPMWorkPublicKey) != tpmwork.PublicKeySize {
 		return fmt.Errorf("VCT: TPM work public key must be %d bytes, got %d", tpmwork.PublicKeySize, len(header.TPMWorkPublicKey))
@@ -252,7 +255,9 @@ func verifyTPMFieldEra(header *types.Header, active bool) error {
 	if len(header.TPMWorkSignature) != tpmwork.SignatureSize {
 		return fmt.Errorf("VCT: TPM work signature must be %d bytes, got %d", tpmwork.SignatureSize, len(header.TPMWorkSignature))
 	}
-	if header.VRFSignature != nil {
+	// TPM fields follow VRFSignature in the RLP layout, so a TPM-gated header
+	// carries an empty placeholder that decodes as []byte{}, not nil.
+	if len(header.VRFSignature) != 0 {
 		return errors.New("VCT: legacy mining signature present after TPM-gated fork")
 	}
 	return nil
@@ -320,11 +325,11 @@ func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *
 			return err
 		}
 		if isTPMGated {
-			if err := ecc.verifyTPMWorkSig(header, ecc.SealHash(header).Bytes()); err != nil {
+			if err := ecc.verifyTPMWorkSig(chain, header, ecc.SealHash(header).Bytes()); err != nil {
 				return err
 			}
 		} else if isVCT {
-			if err := ecc.verifyMiningSig(header, ecc.SealHash(header).Bytes(), isVCT); err != nil {
+			if err := ecc.verifyMiningSig(chain, header, ecc.SealHash(header).Bytes(), isVCT); err != nil {
 				return err
 			}
 		}
@@ -368,9 +373,11 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 	if vrfAddr != header.Coinbase {
 		return fmt.Errorf("VCT: VRF public key address %v != coinbase %v", vrfAddr, header.Coinbase)
 	}
-	// WIP-6: VRF message = VCT_VRF || chainId || phash_{h-1} || h.
-	chainIDBytes := ecc.chainIDBytes()
-	msg := computeVRFMsg(chainIDBytes, header.ParentHash.Bytes(), blockNumber)
+	// WIP-6: bind the VRF input to the configured branch-local delayed seed.
+	msg, err := ecc.delayedVRFMessage(chain, parent, blockNumber)
+	if err != nil {
+		return err
+	}
 
 	// Compute elapsed header time for progressive timeout eligibility.
 	if header.Time > parent.Time {
@@ -529,7 +536,7 @@ func (ecc *ECC) verifySeal(chain consensus.ChainHeaderReader, header *types.Head
 		return errInvalidDifficulty
 	}
 
-	if chain.Config().ChainID != nil {
+	if chain != nil && chain.Config().ChainID != nil {
 		ecc.lock.Lock()
 		ecc.chainID = chain.Config().ChainID
 		ecc.lock.Unlock()
@@ -550,8 +557,7 @@ func (ecc *ECC) verifySeal(chain consensus.ChainHeaderReader, header *types.Head
 	}
 	var powSeed []byte
 	if isVCTBlock {
-		msg := computeVRFMsg(ecc.chainIDBytes(), header.ParentHash.Bytes(), header.Number.Uint64())
-		vrfOutput, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg)
+		vrfOutput, err := ecc.verifiedVRFOutput(chain, header)
 		if err != nil {
 			return fmt.Errorf("VCT: cannot derive verified VRF output for PoW seed: %w", err)
 		}
@@ -569,7 +575,7 @@ func (ecc *ECC) verifySeal(chain consensus.ChainHeaderReader, header *types.Head
 		digest []byte
 		flag   bool
 	)
-	if chain.Config().IsSeoul(header.Number) {
+	if chain == nil || chain.Config().IsSeoul(header.Number) {
 		flag, _, _, digest = VCTVerifyOptimizedDecodingSeoul(header, powSeed)
 	} else {
 		flag, _, _, digest = VCTVerifyOptimizedDecoding(header, powSeed)
@@ -643,7 +649,7 @@ func (ecc *ECC) SealHash(header *types.Header) (hash common.Hash) {
 		enc = append(enc, header.BaseFee)
 	}
 	// Preserve the exact pre-TPM VCT seal hash when both fields are absent.
-	// TPM headers append the DID and work key after the legacy field sequence.
+	// TPM headers append the legacy-named identity and work key after the legacy field sequence.
 	if header.TPMDID != nil || header.TPMWorkPublicKey != nil {
 		enc = append(enc, header.TPMDID, header.TPMWorkPublicKey)
 	}
@@ -675,7 +681,7 @@ func legacySealHash(header *types.Header) (hash common.Hash) {
 // signature by the block's coinbase account.
 // WIP-6:     m = Keccak256(VCT_MINE || sealHash || verifiedVRFOutput || nonce).
 // Pre-WIP-6: m = Keccak256(VCT_MINE || chainId || sealHash || nonce).
-func (ecc *ECC) verifyMiningSig(header *types.Header, sealHash []byte, isVCT bool) error {
+func (ecc *ECC) verifyMiningSig(chain consensus.ChainHeaderReader, header *types.Header, sealHash []byte, isVCT bool) error {
 	if len(header.VRFSignature) != 65 {
 		return fmt.Errorf("VCT: VRFSignature must be 65 bytes, got %d", len(header.VRFSignature))
 	}
@@ -687,8 +693,7 @@ func (ecc *ECC) verifyMiningSig(header *types.Header, sealHash []byte, isVCT boo
 	}
 	var msgHash []byte
 	if isVCT {
-		msg := computeVRFMsg(ecc.chainIDBytes(), header.ParentHash.Bytes(), header.Number.Uint64())
-		vrfOutput, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg)
+		vrfOutput, err := ecc.verifiedVRFOutput(chain, header)
 		if err != nil {
 			return fmt.Errorf("VCT: cannot derive verified VRF output for mining signature: %w", err)
 		}
@@ -709,13 +714,12 @@ func (ecc *ECC) verifyMiningSig(header *types.Header, sealHash []byte, isVCT boo
 
 // verifyTPMWorkSig authenticates one nonce trial with the P-256 work key in
 // the header. Stateful proposer verification separately binds that key to the
-// active DID registration in the parent state.
-func (ecc *ECC) verifyTPMWorkSig(header *types.Header, sealHash []byte) error {
+// active TPM-bound identity registration in the parent state.
+func (ecc *ECC) verifyTPMWorkSig(chain consensus.ChainHeaderReader, header *types.Header, sealHash []byte) error {
 	if len(header.TPMDID) != common.HashLength {
-		return fmt.Errorf("VCT: TPM DID must be %d bytes, got %d", common.HashLength, len(header.TPMDID))
+		return fmt.Errorf("VCT: TPM identity must be %d bytes, got %d", common.HashLength, len(header.TPMDID))
 	}
-	msg := computeVRFMsg(ecc.chainIDBytes(), header.ParentHash.Bytes(), header.Number.Uint64())
-	vrfOutput, err := VRFVerify(header.VRFPublicKey, header.VRFProof, msg)
+	vrfOutput, err := ecc.verifiedVRFOutput(chain, header)
 	if err != nil {
 		return fmt.Errorf("VCT: cannot derive verified VRF output for TPM work signature: %w", err)
 	}

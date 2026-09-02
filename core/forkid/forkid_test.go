@@ -192,6 +192,31 @@ func TestCreation(t *testing.T) {
 	}
 }
 
+// TestTGPoWForks verifies that the fork-ID handshake advertises each TGPoW
+// activation block in chronological order. The generic fork collector uses
+// reflection, so this test guards newly added ChainConfig fields from being
+// silently omitted or assigned a non-fork type/name.
+func TestTGPoWForks(t *testing.T) {
+	config := &params.ChainConfig{
+		VCTBlock:         big.NewInt(10),
+		TPMRegistryBlock: big.NewInt(20),
+		TPMGatedBlock:    big.NewInt(30),
+	}
+	genesis := common.HexToHash("0x010203")
+
+	atGenesis := NewID(config, genesis, 0)
+	atVCT := NewID(config, genesis, 10)
+	atRegistry := NewID(config, genesis, 20)
+	atTPMGated := NewID(config, genesis, 30)
+
+	if atGenesis.Next != 10 || atVCT.Next != 20 || atRegistry.Next != 30 || atTPMGated.Next != 0 {
+		t.Fatalf("unexpected TGPoW fork sequence: genesis=%x vct=%x registry=%x gated=%x", atGenesis, atVCT, atRegistry, atTPMGated)
+	}
+	if atGenesis.Hash == atVCT.Hash || atVCT.Hash == atRegistry.Hash || atRegistry.Hash == atTPMGated.Hash {
+		t.Fatalf("TGPoW activation did not update fork checksum: genesis=%x vct=%x registry=%x gated=%x", atGenesis, atVCT, atRegistry, atTPMGated)
+	}
+}
+
 // TestValidation tests that a local peer correctly validates and accepts a remote
 // fork ID.
 func TestValidation(t *testing.T) {

@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/cryptoecc/WorldLand/metrics"
-	"github.com/cryptoecc/WorldLand/p2p"
 	"github.com/elastic/gosigar"
 )
 
@@ -47,8 +46,8 @@ func (db *Dashboard) collectSystemData() {
 	var (
 		mem runtime.MemStats
 
-		collectNetworkIngress = meterCollector(p2p.MetricsInboundTraffic)
-		collectNetworkEgress  = meterCollector(p2p.MetricsOutboundTraffic)
+		collectNetworkIngress = meterCollector("p2p/ingress")
+		collectNetworkEgress  = meterCollector("p2p/egress")
 		collectDiskRead       = meterCollector("eth/db/chaindata/disk/read")
 		collectDiskWrite      = meterCollector("eth/db/chaindata/disk/write")
 

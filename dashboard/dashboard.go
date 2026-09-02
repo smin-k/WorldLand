@@ -50,6 +50,7 @@ const (
 // Dashboard contains the dashboard internals.
 type Dashboard struct {
 	config *Config // Configuration values for the dashboard
+	server *p2p.Server
 
 	listener   net.Listener       // Network listener listening for dashboard clients
 	conns      map[uint32]*client // Currently live websocket connections
@@ -126,6 +127,7 @@ func (db *Dashboard) APIs() []rpc.API { return nil }
 // Implements the node.Service interface.
 func (db *Dashboard) Start(server *p2p.Server) error {
 	log.Info("Starting dashboard")
+	db.server = server
 
 	db.wg.Add(3)
 	go db.collectSystemData()

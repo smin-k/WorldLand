@@ -18,10 +18,8 @@ package dashboard
 
 import (
 	"container/list"
-	"strings"
+	"net"
 	"time"
-
-	"github.com/cryptoecc/WorldLand/metrics"
 
 	"github.com/cryptoecc/WorldLand/log"
 	"github.com/cryptoecc/WorldLand/p2p"
@@ -380,40 +378,20 @@ func (db *Dashboard) collectPeerData() {
 	}
 	defer db.geodb.close()
 
-	peerCh := make(chan p2p.MeteredPeerEvent, eventBufferLimit) // Peer event channel.
-	subPeer := p2p.SubscribeMeteredPeerEvent(peerCh)            // Subscribe to peer events.
-	defer subPeer.Unsubscribe()                                 // Unsubscribe at the end.
+	peerCh := make(chan *p2p.PeerEvent, eventBufferLimit) // Peer event channel.
+	subPeer := db.server.SubscribeEvents(peerCh)          // Subscribe to peer events.
+	defer subPeer.Unsubscribe()                           // Unsubscribe at the end.
 
 	ticker := time.NewTicker(db.config.Refresh)
 	defer ticker.Stop()
 
-	type registryFunc func(name string, i interface{})
-	type collectorFunc func(traffic *trafficMap) registryFunc
-
-	// trafficCollector generates a function that can be passed to
-	// the prefixed peer registry in order to collect the metered
-	// traffic data from each peer meter.
-	trafficCollector := func(prefix string) collectorFunc {
-		// This part makes is possible to collect the
-		// traffic data into a map from outside.
-		return func(traffic *trafficMap) registryFunc {
-			// The function which can be passed to the registry.
-			return func(name string, i interface{}) {
-				if m, ok := i.(metrics.Meter); ok {
-					// The name of the meter has the format: <common traffic prefix><IP>/<ID>
-					if k := strings.Split(strings.TrimPrefix(name, prefix), "/"); len(k) == 2 {
-						traffic.insert(k[0], k[1], float64(m.Count()))
-					} else {
-						log.Warn("Invalid meter name", "name", name, "prefix", prefix)
-					}
-				} else {
-					log.Warn("Invalid meter type", "name", name)
-				}
-			}
+	peerIP := func(address string) string {
+		host, _, err := net.SplitHostPort(address)
+		if err == nil {
+			return host
 		}
+		return address
 	}
-	collectIngress := trafficCollector(p2p.MetricsInboundTraffic + "/")
-	collectEgress := trafficCollector(p2p.MetricsOutboundTraffic + "/")
 
 	peers := newPeerContainer(db.geodb)
 	db.peerLock.Lock()
@@ -433,43 +411,21 @@ func (db *Dashboard) collectPeerData() {
 		case event := <-peerCh:
 			now := time.Now()
 			switch event.Type {
-			case p2p.PeerConnected:
-				connected := now.Add(-event.Elapsed)
+			case p2p.PeerEventTypeAdd:
 				newPeerEvents = append(newPeerEvents, &peerEvent{
-					IP:        event.IP.String(),
-					ID:        event.ID.String(),
-					Connected: &connected,
+					IP:        peerIP(event.RemoteAddress),
+					ID:        event.Peer.String(),
+					Connected: &now,
 				})
-			case p2p.PeerDisconnected:
-				ip, id := event.IP.String(), event.ID.String()
+			case p2p.PeerEventTypeDrop:
+				ip, id := peerIP(event.RemoteAddress), event.Peer.String()
 				newPeerEvents = append(newPeerEvents, &peerEvent{
 					IP:           ip,
 					ID:           id,
 					Disconnected: &now,
 				})
-				// The disconnect event comes with the last metered traffic count,
-				// because after the disconnection the peer's meter is removed
-				// from the registry. It can happen, that between two metering
-				// period the same peer disconnects multiple times, and appending
-				// all the samples to the traffic arrays would shift the metering,
-				// so only the last metering is stored, overwriting the previous one.
-				ingress.insert(ip, id, float64(event.Ingress))
-				egress.insert(ip, id, float64(event.Egress))
-			case p2p.PeerHandshakeFailed:
-				connected := now.Add(-event.Elapsed)
-				newPeerEvents = append(newPeerEvents, &peerEvent{
-					IP:           event.IP.String(),
-					Connected:    &connected,
-					Disconnected: &now,
-				})
-			default:
-				log.Error("Unknown metered peer event type", "type", event.Type)
 			}
 		case <-ticker.C:
-			// Collect the traffic samples from the registry.
-			p2p.PeerIngressRegistry.Each(collectIngress(ingress))
-			p2p.PeerEgressRegistry.Each(collectEgress(egress))
-
 			// Protect 'peers', because it is part of the history.
 			db.peerLock.Lock()
 

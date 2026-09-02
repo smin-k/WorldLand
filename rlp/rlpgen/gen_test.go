@@ -74,6 +74,11 @@ func TestOutput(t *testing.T) {
 			if err != nil {
 				t.Fatal("error loading expected test output:", err)
 			}
+			// Git may check text fixtures out with CRLF on Windows while the Go
+			// formatter always emits LF. Compare canonical line endings so the
+			// generator test checks syntax/content instead of checkout policy.
+			wantOutput = bytes.ReplaceAll(wantOutput, []byte("\r\n"), []byte("\n"))
+			output = bytes.ReplaceAll(output, []byte("\r\n"), []byte("\n"))
 			if !bytes.Equal(output, wantOutput) {
 				t.Fatal("output mismatch:\n", string(output))
 			}

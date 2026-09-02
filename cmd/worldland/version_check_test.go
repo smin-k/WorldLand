@@ -17,6 +17,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -53,6 +54,9 @@ func testVerification(t *testing.T, pubkey, sigdir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Minisign covers the exact upstream fixture bytes. Git may check the
+	// fixture out with CRLF on Windows, so canonicalize it back to LF here.
+	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 	// Signatures, with and without comments, both trusted and untrusted
 	files, err := os.ReadDir(sigdir)
 	if err != nil {
@@ -63,6 +67,7 @@ func testVerification(t *testing.T, pubkey, sigdir string) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		sig = bytes.ReplaceAll(sig, []byte("\r\n"), []byte("\n"))
 		err = verifySignature([]string{pubkey}, data, sig)
 		if err != nil {
 			t.Fatal(err)

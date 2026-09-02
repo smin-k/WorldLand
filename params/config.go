@@ -457,10 +457,6 @@ var (
 		LondonBlock:         big.NewInt(0),
 		ArrowGlacierBlock:   big.NewInt(0),
 		GrayGlacierBlock:    big.NewInt(0),
-		WorldlandBlock:      big.NewInt(0),
-		HalvingEndTime:      big.NewInt(0),
-		SeoulBlock:          big.NewInt(0),
-		AnnapurnaBlock:      big.NewInt(0),
 		Ethash:              new(EthashConfig),
 	}
 
@@ -480,10 +476,6 @@ var (
 		MuirGlacierBlock:    big.NewInt(0),
 		BerlinBlock:         big.NewInt(0),
 		LondonBlock:         big.NewInt(0),
-		WorldlandBlock:      big.NewInt(0),
-		HalvingEndTime:      big.NewInt(0),
-		SeoulBlock:          big.NewInt(0),
-		AnnapurnaBlock:      big.NewInt(0),
 		Clique:              &CliqueConfig{Period: 0, Epoch: 30000},
 	}
 
@@ -502,10 +494,6 @@ var (
 		LondonBlock:         big.NewInt(0),
 		ArrowGlacierBlock:   big.NewInt(0),
 		GrayGlacierBlock:    big.NewInt(0),
-		WorldlandBlock:      big.NewInt(0),
-		HalvingEndTime:      big.NewInt(0),
-		SeoulBlock:          big.NewInt(0),
-		AnnapurnaBlock:      big.NewInt(0),
 		Ethash:              new(EthashConfig),
 	}
 	NonActivatedConfig = &ChainConfig{

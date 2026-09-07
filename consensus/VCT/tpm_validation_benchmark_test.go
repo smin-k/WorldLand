@@ -7,8 +7,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"fmt"
 	"math/big"
+	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -34,12 +37,14 @@ var (
 	benchmarkTPMGateParentState *state.StateDB
 )
 
+const maxTPMConsensusGateTraceSamples = 100_000
+
 // BenchmarkVCTTPMConsensusGate measures the serial, hot consensus-gate path
 // for a valid TPM-gated candidate with an already materialized parent state.
 // Candidate construction, state acquisition, body processing, and the ECCPoW
 // nonce search are intentionally outside the timed region.
 func BenchmarkVCTTPMConsensusGate(b *testing.B) {
-	ecc, chain, header, parent, parentState := makeTPMConsensusGateBenchmarkFixture(b)
+	ecc, chain, header, parent, parentState := makeTPMConsensusGateFixture(b)
 
 	// Reject a broken fixture before starting the timer. Header validation and
 	// stateful proposer validation are separate calls in the block-import path.
@@ -63,16 +68,54 @@ func BenchmarkVCTTPMConsensusGate(b *testing.B) {
 	}
 }
 
-func makeTPMConsensusGateBenchmarkFixture(b *testing.B) (*ECC, *mockChainReader, *types.Header, *types.Header, *state.StateDB) {
-	b.Helper()
+// TestVCTTPMConsensusGateLatencyTrace records consecutive per-validation
+// latencies for the same serial, hot consensus-gate scope as the benchmark.
+// It is opt-in because constructing its valid ECCPoW fixture is expensive.
+func TestVCTTPMConsensusGateLatencyTrace(t *testing.T) {
+	rawSamples, enabled := os.LookupEnv("TGPOW_VALIDATION_TRACE_SAMPLES")
+	if !enabled || rawSamples == "" {
+		t.Skip("set TGPOW_VALIDATION_TRACE_SAMPLES to collect a validation latency trace")
+	}
+	samples, err := strconv.ParseUint(rawSamples, 10, 32)
+	if err != nil || samples == 0 || samples > maxTPMConsensusGateTraceSamples {
+		t.Fatalf("TGPOW_VALIDATION_TRACE_SAMPLES must be an integer in [1,%d], got %q", maxTPMConsensusGateTraceSamples, rawSamples)
+	}
+
+	ecc, chain, header, parent, parentState := makeTPMConsensusGateFixture(t)
+	if err := ecc.VerifyHeader(chain, header, true); err != nil {
+		t.Fatalf("fixture header verification: %v", err)
+	}
+	if err := ecc.VerifyProposerEligibility(chain, header, parent, parentState); err != nil {
+		t.Fatalf("fixture proposer verification: %v", err)
+	}
+
+	latencies := make([]int64, int(samples))
+	runtime.GC()
+	for i := range latencies {
+		start := time.Now()
+		if err := ecc.VerifyHeader(chain, header, true); err != nil {
+			t.Fatalf("sample %d header verification: %v", i, err)
+		}
+		if err := ecc.VerifyProposerEligibility(chain, header, parent, parentState); err != nil {
+			t.Fatalf("sample %d proposer verification: %v", i, err)
+		}
+		latencies[i] = time.Since(start).Nanoseconds()
+	}
+	for i, latency := range latencies {
+		fmt.Printf("TGPOW_VALIDATION_SAMPLE,%d,%d\n", i, latency)
+	}
+}
+
+func makeTPMConsensusGateFixture(tb testing.TB) (*ECC, *mockChainReader, *types.Header, *types.Header, *state.StateDB) {
+	tb.Helper()
 	benchmarkTPMGateFixtureOnce.Do(func() {
-		benchmarkTPMGateECC, benchmarkTPMGateChain, benchmarkTPMGateHeader, benchmarkTPMGateParent, benchmarkTPMGateParentState = buildTPMConsensusGateBenchmarkFixture(b)
+		benchmarkTPMGateECC, benchmarkTPMGateChain, benchmarkTPMGateHeader, benchmarkTPMGateParent, benchmarkTPMGateParentState = buildTPMConsensusGateFixture(tb)
 	})
 	return benchmarkTPMGateECC, benchmarkTPMGateChain, benchmarkTPMGateHeader, benchmarkTPMGateParent, benchmarkTPMGateParentState
 }
 
-func buildTPMConsensusGateBenchmarkFixture(b *testing.B) (*ECC, *mockChainReader, *types.Header, *types.Header, *state.StateDB) {
-	b.Helper()
+func buildTPMConsensusGateFixture(tb testing.TB) (*ECC, *mockChainReader, *types.Header, *types.Header, *state.StateDB) {
+	tb.Helper()
 
 	chainID := big.NewInt(91510)
 	ecc := &ECC{
@@ -92,11 +135,11 @@ func buildTPMConsensusGateBenchmarkFixture(b *testing.B) (*ECC, *mockChainReader
 	vrfSecret[31] = 1
 	vrfPublicKey, err := secp256k1.VRFPubkeyFromSeckey(vrfSecret)
 	if err != nil {
-		b.Fatalf("derive VRF public key: %v", err)
+		tb.Fatalf("derive VRF public key: %v", err)
 	}
 	accountKey, err := crypto.ToECDSA(vrfSecret)
 	if err != nil {
-		b.Fatalf("parse VRF account key: %v", err)
+		tb.Fatalf("parse VRF account key: %v", err)
 	}
 	coinbase := crypto.PubkeyToAddress(accountKey.PublicKey)
 	deviceNullifier := crypto.Keccak256Hash([]byte("tgpow-validation-benchmark-nullifier"))
@@ -104,7 +147,7 @@ func buildTPMConsensusGateBenchmarkFixture(b *testing.B) (*ECC, *mockChainReader
 	profileHash := crypto.Keccak256Hash([]byte("tgpow-validation-benchmark-profile"))
 	workKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		b.Fatalf("generate P-256 work key: %v", err)
+		tb.Fatalf("generate P-256 work key: %v", err)
 	}
 	workPublicKey := elliptic.Marshal(elliptic.P256(), workKey.X, workKey.Y)
 
@@ -114,7 +157,7 @@ func buildTPMConsensusGateBenchmarkFixture(b *testing.B) (*ECC, *mockChainReader
 	stateDatabase := state.NewDatabase(rawdb.NewMemoryDatabase())
 	registrationState, err := state.New(common.Hash{}, stateDatabase, nil)
 	if err != nil {
-		b.Fatalf("create registration state: %v", err)
+		tb.Fatalf("create registration state: %v", err)
 	}
 	registrationState.SetState(TPMRegistryAddress, registrationFieldSlot(did, registrationControllerOffset), common.BytesToHash(coinbase.Bytes()))
 	registrationState.SetState(TPMRegistryAddress, registrationFieldSlot(did, registrationWorkKeyHashOffset), crypto.Keccak256Hash(workPublicKey))
@@ -124,11 +167,11 @@ func buildTPMConsensusGateBenchmarkFixture(b *testing.B) (*ECC, *mockChainReader
 	registrationState.SetState(TPMRegistryAddress, registrationFieldSlot(did, registrationActiveOffset), common.BigToHash(big.NewInt(1)))
 	parentRoot, err := registrationState.Commit(false)
 	if err != nil {
-		b.Fatalf("commit registration state: %v", err)
+		tb.Fatalf("commit registration state: %v", err)
 	}
 	parentState, err := state.New(parentRoot, stateDatabase, nil)
 	if err != nil {
-		b.Fatalf("reopen committed parent state: %v", err)
+		tb.Fatalf("reopen committed parent state: %v", err)
 	}
 
 	// Place the measured candidate after a VCT parent so delayedVRFMessage uses
@@ -165,7 +208,7 @@ func buildTPMConsensusGateBenchmarkFixture(b *testing.B) (*ECC, *mockChainReader
 	parentVRFMessage := computeVRFMsg(ecc.chainIDBytes(), grandparent.Hash().Bytes(), parent.Number.Uint64())
 	parent.VRFProof, _, err = VRFProve(vrfSecret, vrfPublicKey, parentVRFMessage)
 	if err != nil {
-		b.Fatalf("create parent VRF proof: %v", err)
+		tb.Fatalf("create parent VRF proof: %v", err)
 	}
 	chain := &mockChainReader{
 		cfg: cfg,
@@ -193,24 +236,24 @@ func buildTPMConsensusGateBenchmarkFixture(b *testing.B) (*ECC, *mockChainReader
 	}
 	vrfMessage, err := ecc.delayedVRFMessage(chain, parent, header.Number.Uint64())
 	if err != nil {
-		b.Fatalf("derive steady-state child VRF message: %v", err)
+		tb.Fatalf("derive steady-state child VRF message: %v", err)
 	}
 	header.VRFProof, _, err = VRFProve(vrfSecret, vrfPublicKey, vrfMessage)
 	if err != nil {
-		b.Fatalf("create VRF proof: %v", err)
+		tb.Fatalf("create VRF proof: %v", err)
 	}
 
-	mineTPMConsensusGateBenchmarkHeader(b, ecc, header, workKey)
+	mineTPMConsensusGateHeader(tb, ecc, header, workKey)
 	return ecc, chain, header, parent, parentState
 }
 
-func mineTPMConsensusGateBenchmarkHeader(b *testing.B, ecc *ECC, header *types.Header, workKey *ecdsa.PrivateKey) {
-	b.Helper()
+func mineTPMConsensusGateHeader(tb testing.TB, ecc *ECC, header *types.Header, workKey *ecdsa.PrivateKey) {
+	tb.Helper()
 
 	sealHash := ecc.SealHash(header).Bytes()
 	vrfOutput, err := VRFOutputFromProof(header.VRFProof)
 	if err != nil {
-		b.Fatalf("extract VRF output: %v", err)
+		tb.Fatalf("extract VRF output: %v", err)
 	}
 	parameters, _ := setParameters_Seoul(header)
 	parityCheck := generateH(parameters)
@@ -221,14 +264,14 @@ func mineTPMConsensusGateBenchmarkHeader(b *testing.B, ecc *ECC, header *types.H
 		workMessage := computeTPMWorkSigMsg(ecc.chainIDBytes(), sealHash, did, vrfOutput, nonce)
 		r, s, signErr := ecdsa.Sign(rand.Reader, workKey, workMessage)
 		if signErr != nil {
-			b.Fatalf("sign TPM work message: %v", signErr)
+			tb.Fatalf("sign TPM work message: %v", signErr)
 		}
 		signature := make([]byte, tpmwork.SignatureSize)
 		r.FillBytes(signature[:32])
 		s.FillBytes(signature[32:])
 		signature, signErr = tpmwork.NormalizeSignature(signature)
 		if signErr != nil {
-			b.Fatalf("normalize TPM signature: %v", signErr)
+			tb.Fatalf("normalize TPM signature: %v", signErr)
 		}
 
 		digest := crypto.Keccak512(computeTPMPowSeed(workMessage, signature))

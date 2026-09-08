@@ -374,6 +374,21 @@ func (beacon *Beacon) Prepare(chain consensus.ChainHeaderReader, header *types.H
 	return nil
 }
 
+// PrepareBlockTemplate forwards pre-execution preparation to the active PoW
+// engine. The wrapper must not hide VCT's immutable-template contract.
+func (beacon *Beacon) PrepareBlockTemplate(chain consensus.ChainHeaderReader, header *types.Header) error {
+	if !chain.Config().IsWorldland(header.Number) {
+		reached, err := IsTTDReached(chain, header.ParentHash, header.Number.Uint64()-1)
+		if err != nil || reached {
+			return err
+		}
+	}
+	if preparer, ok := beacon.ethone.(consensus.BlockTemplatePreparer); ok {
+		return preparer.PrepareBlockTemplate(chain, header)
+	}
+	return nil
+}
+
 // Finalize implements consensus.Engine, setting the final state on the header
 func (beacon *Beacon) Finalize(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, txs []*types.Transaction, uncles []*types.Header) {
 	// Finalize is different with Prepare, it can be used in both block generation

@@ -138,20 +138,38 @@ func (api *MinerAPI) SetRecommitInterval(interval int) {
 // exclusively in the next local candidate block. The miner namespace is a
 // private/admin API and must not be exposed to untrusted networks.
 func (api *MinerAPI) SubmitEnrollmentChallenge(target hexutil.Uint64, raw hexutil.Bytes) (common.Hash, error) {
-	return api.SubmitEnrollmentTransaction(target, raw)
+	return api.SubmitEnrollmentTransaction(target, raw, nil)
 }
 
 // SubmitEnrollmentTransaction stages a challenge or producer approval in one
 // exact local candidate block without transaction-pool gossip.
-func (api *MinerAPI) SubmitEnrollmentTransaction(target hexutil.Uint64, raw hexutil.Bytes) (common.Hash, error) {
+func (api *MinerAPI) SubmitEnrollmentTransaction(target hexutil.Uint64, raw hexutil.Bytes, parent *common.Hash) (common.Hash, error) {
 	var transaction types.Transaction
 	if err := transaction.UnmarshalBinary(raw); err != nil {
 		return common.Hash{}, err
 	}
-	if err := api.e.Miner().SubmitPrivateEnrollmentTransaction(uint64(target), &transaction); err != nil {
+	if err := api.e.Miner().SubmitPrivateEnrollmentForParent(uint64(target), &transaction, parent); err != nil {
 		return common.Hash{}, err
 	}
 	return transaction.Hash(), nil
+}
+
+// EnrollmentQueue exposes only the local miner's branch-bound private queue.
+// It allows the producer agent to recover safely after a restart or lost ACK.
+func (api *MinerAPI) EnrollmentQueue(target hexutil.Uint64, parent common.Hash) (map[string]interface{}, error) {
+	txs, err := api.e.Miner().EnrollmentQueue(uint64(target), parent)
+	if err != nil {
+		return nil, err
+	}
+	raw := make([]hexutil.Bytes, 0, len(txs))
+	for _, tx := range txs {
+		encoded, err := tx.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		raw = append(raw, encoded)
+	}
+	return map[string]interface{}{"parentHash": parent, "target": target, "transactions": raw}, nil
 }
 
 // AdminAPI is the collection of Ethereum full node related APIs for node

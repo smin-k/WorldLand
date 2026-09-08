@@ -37,6 +37,7 @@ func main() {
 	keyFile := flag.String("signing-key", "", "validator secp256k1 private-key file")
 	printPolicy := flag.Bool("print-policy-digest", false, "print the configured policy digest and exit")
 	requireEKOID := flag.Bool("require-ek-oid", true, "require tcg-kp-EKCertificate extended key usage")
+	certificateProfile := flag.String("certificate-profile", tpmregistry.CertificateProfileManufacturer, "EK certificate policy: manufacturer or gcp-cas-v1 (pinned Google root)")
 	maxEvidence := flag.Uint64("max-evidence-bytes", 1024*1024, "maximum canonical evidence size")
 	maxSessions := flag.Int("max-sessions", 4096, "maximum concurrent activation sessions")
 	sessionTTL := flag.Duration("session-ttl", 5*time.Minute, "activation session lifetime")
@@ -47,7 +48,7 @@ func main() {
 	flag.Var(&profiles, "profile-hash", "allowed 32-byte profile hash (repeatable)")
 	flag.Parse()
 
-	if len(roots) == 0 {
+	if len(roots) == 0 && *certificateProfile == tpmregistry.CertificateProfileManufacturer {
 		flag.Usage()
 		log.Fatal("at least one ek-root is required")
 	}
@@ -67,6 +68,9 @@ func main() {
 		Version: tpmregistry.EvidenceVersion, RootCertificates: certificates,
 		RequireEKCertificateOID: *requireEKOID, MaxEvidenceBytes: *maxEvidence,
 		AllowedProfileHashes: allowedProfiles,
+	}
+	if err := policy.ConfigureCertificateProfile(*certificateProfile); err != nil {
+		log.Fatal(err)
 	}
 	if *printPolicy {
 		digest, err := policy.Digest()

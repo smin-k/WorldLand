@@ -69,6 +69,31 @@ changing EPS and obtaining a genuinely new manufacturer-recognized identity;
 the validator policy must reject uncertified replacement EKs or require a
 manufacturer migration record linking them to the already-consumed device.
 
+The implemented canonical EK profile is RSA-2048 with exponent 65537, SHA-256
+Names, attributes `0x000300b2` (`fixedTPM`, `fixedParent`,
+`sensitiveDataOrigin`, `adminWithPolicy`, `restricted`, `decrypt`), the standard
+SHA-256 `PolicySecret(TPM_RH_ENDORSEMENT)` policy with empty `policyRef`,
+AES-128-CFB symmetric parameters, and a NULL signing scheme. The public key is
+first matched to the manufacturer-validated certificate. `CanonicalEKName`
+then checks the entire submitted public area against this fixed profile and
+computes its TPM Name with the default exponent encoded as zero. The equivalent
+explicit exponent 65537 is accepted; altered policies, attributes, or other
+templates are rejected. This realizes `Name(EK_can)` in the paper. Reading an
+arbitrary TPM Name or matching only the RSA key to its certificate is insufficient:
+credential activation binds the EK public key and AK Name, not the claimant's
+description of the EK template.
+
+Enrollment evidence may contain a 33-byte compressed or 65-byte uncompressed
+secp256k1 VRF key. `VRFKeyHash` always commits to the compressed encoding used by
+VCT headers. The evidence commitment still covers the original evidence bytes.
+
+These canonicalization rules change enrollment-policy semantics. `Policy.Digest`
+includes their rule revision, so a deployment must deliberately update its
+configured policy digest. Existing registrations are not silently reinterpreted
+or grandfathered by a second, legacy nullifier lookup. A fresh experiment must
+use a fresh registry/genesis; a running deployment requires an explicit audited
+migration of existing registrations, key hashes, and consumed device identities.
+
 ## Consensus-critical storage
 
 WorldLand reads `registrations` directly from parent state in

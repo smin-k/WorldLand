@@ -16,6 +16,9 @@ func Apply(spec *core.Genesis, config tpmregistry.PredeployConfig) error {
 	if spec == nil {
 		return errors.New("tpmregistry: nil genesis")
 	}
+	if err := spec.Config.CheckTPMActivationDelay(config.ActivationDelay); err != nil {
+		return err
+	}
 	address := config.Address
 	if address == (common.Address{}) {
 		address = tpmregistry.DefaultRegistryAddress

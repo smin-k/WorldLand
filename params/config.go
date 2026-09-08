@@ -664,6 +664,22 @@ func (c *VctConfig) EffectiveSeedDelay() uint64 {
 	return normalizedVCTSeedDelay(c.SeedDelay)
 }
 
+// CheckTPMActivationDelay requires a newly registered VRF key to be committed
+// before the seed of its first eligible block is determined. Registration
+// finalized at r can first propose at r+activationDelay+1, whose delayed seed
+// must be at height at least r+1. The rule applies only to TPM-gated chains;
+// registry-only deployments do not select a consensus seed.
+func (c *ChainConfig) CheckTPMActivationDelay(activationDelay uint64) error {
+	if c == nil || c.TPMGatedBlock == nil {
+		return nil
+	}
+	seedDelay := c.Vct.EffectiveSeedDelay()
+	if activationDelay < seedDelay {
+		return fmt.Errorf("TPM registry activation delay %d must be at least VCT seed delay %d", activationDelay, seedDelay)
+	}
+	return nil
+}
+
 // TPMRegistryConfig is consensus configuration for a one-time registry
 // predeploy on an existing chain. New chains should put the same state in the
 // genesis allocation instead.
@@ -972,6 +988,9 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 	}
 	if c.TPMRegistry != nil {
 		if err := validateTPMRegistryConfig(c.TPMRegistry); err != nil {
+			return err
+		}
+		if err := c.CheckTPMActivationDelay(c.TPMRegistry.ActivationDelay); err != nil {
 			return err
 		}
 	}

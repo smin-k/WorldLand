@@ -1,11 +1,10 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package tpmwork
 
 import "fmt"
 
-// OpenPlatformSigner is only available through the Windows platform KSP in
-// this prototype. Linux TPM2-TSS support can implement the same Signer API.
+// OpenPlatformSigner is supported on Windows and Linux only.
 func OpenPlatformSigner(keyName string, create bool) (Signer, error) {
-	return nil, fmt.Errorf("tpmwork: Windows platform TPM provider is unavailable on this operating system")
+	return nil, fmt.Errorf("tpmwork: platform TPM provider requires Windows or Linux")
 }

@@ -575,7 +575,7 @@ var (
 	}
 	MinerTPMKeyFlag = &cli.StringFlag{
 		Name:     "miner.tpmkey",
-		Usage:    "Persisted TPM work-key name in the Windows platform crypto provider",
+		Usage:    "Persisted TPM work-key name (Windows KSP name; Linux alias or persistent handle)",
 		Category: flags.MinerCategory,
 	}
 	MinerTPMDIDFlag = &cli.StringFlag{

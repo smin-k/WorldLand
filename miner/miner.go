@@ -196,6 +196,14 @@ func (miner *Miner) SubmitPrivateEnrollmentTransaction(target uint64, tx *types.
 	return miner.worker.submitPrivateEnrollmentTransaction(target, tx)
 }
 
+func (miner *Miner) SubmitPrivateEnrollmentForParent(target uint64, tx *types.Transaction, parent *common.Hash) error {
+	return miner.worker.submitPrivateEnrollmentForParent(target, tx, parent)
+}
+
+func (miner *Miner) EnrollmentQueue(target uint64, parent common.Hash) ([]*types.Transaction, error) {
+	return miner.worker.enrollmentQueue(target, parent)
+}
+
 // Pending returns the currently pending block and associated state.
 func (miner *Miner) Pending() (*types.Block, *state.StateDB) {
 	return miner.worker.pending()

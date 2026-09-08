@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
@@ -14,11 +15,13 @@ import (
 	"math/big"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
 	ethereum "github.com/cryptoecc/WorldLand"
+	"github.com/cryptoecc/WorldLand/accounts/abi"
 	"github.com/cryptoecc/WorldLand/common"
 	"github.com/cryptoecc/WorldLand/common/hexutil"
 	"github.com/cryptoecc/WorldLand/contracts/tpmregistry"
@@ -43,20 +46,48 @@ type trackedRequest struct {
 }
 
 type producerAgent struct {
-	chainID    *big.Int
-	registry   common.Address
-	key        *ecdsa.PrivateKey
-	address    common.Address
-	policy     *tpmregistry.Policy
-	policyHash common.Hash
-	client     *ethclient.Client
-	rpc        *rpc.Client
-	contract   *tpmregistry.RegistryClient
-	lookback   uint64
-	maxPerSlot int
-	gasLimit   uint64
-	requests   map[common.Hash]*trackedRequest
-	staged     map[string]struct{}
+	chainID          *big.Int
+	registry         common.Address
+	key              *ecdsa.PrivateKey
+	address          common.Address
+	policy           *tpmregistry.Policy
+	policyHash       common.Hash
+	client           producerChain
+	rpc              rpcCaller
+	contract         producerRegistry
+	lookback         uint64
+	maxPerSlot       int
+	gasLimit         uint64
+	requests         map[common.Hash]*trackedRequest
+	staged           map[string]struct{}
+	parentHash       common.Hash
+	queuedChallenges int
+}
+
+type producerChain interface {
+	ChainID(context.Context) (*big.Int, error)
+	HeaderByNumber(context.Context, *big.Int) (*types.Header, error)
+	NonceAt(context.Context, common.Address, *big.Int) (uint64, error)
+	PendingNonceAt(context.Context, common.Address) (uint64, error)
+	SuggestGasPrice(context.Context) (*big.Int, error)
+	FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error)
+}
+
+type producerRegistry interface {
+	Request(context.Context, common.Hash) (tpmregistry.RegistrationRequestState, error)
+	ProducerRequest(context.Context, common.Hash) (tpmregistry.ProducerRequestState, error)
+	ProducerRequestPolicyDigest(context.Context, common.Hash) (common.Hash, error)
+	ProducerSlot(context.Context, common.Hash, uint64) (tpmregistry.ProducerSlotState, error)
+}
+
+type rpcCaller interface {
+	CallContext(context.Context, interface{}, string, ...interface{}) error
+}
+
+type enrollmentQueue struct {
+	ParentHash   common.Hash     `json:"parentHash"`
+	Target       hexutil.Uint64  `json:"target"`
+	Transactions []hexutil.Bytes `json:"transactions"`
 }
 
 func main() {
@@ -67,6 +98,7 @@ func main() {
 	chainIDValue := flag.Int64("chain-id", 0, "chain ID")
 	keyFile := flag.String("producer-key", "", "coinbase secp256k1 private-key file")
 	requireEKOID := flag.Bool("require-ek-oid", true, "require tcg-kp-EKCertificate extended key usage")
+	certificateProfile := flag.String("certificate-profile", tpmregistry.CertificateProfileManufacturer, "EK certificate policy: manufacturer or gcp-cas-v1 (pinned Google root)")
 	maxEvidence := flag.Uint64("max-evidence-bytes", 1024*1024, "maximum canonical evidence size")
 	lookback := flag.Uint64("lookback", 512, "blocks scanned for live registration requests")
 	maxPerSlot := flag.Int("max-per-slot", 4, "maximum registration challenges included per block")
@@ -76,9 +108,9 @@ func main() {
 	flag.Var(&profiles, "profile-hash", "allowed 32-byte profile hash (repeatable)")
 	flag.Parse()
 
-	if *chainIDValue <= 0 || *keyFile == "" || !common.IsHexAddress(*registryHex) || len(roots) == 0 || *maxPerSlot <= 0 {
+	if *chainIDValue <= 0 || *keyFile == "" || !common.IsHexAddress(*registryHex) || *maxPerSlot <= 0 {
 		flag.Usage()
-		log.Fatal("chain-id, producer-key, registry, ek-root and positive max-per-slot are required")
+		log.Fatal("chain-id, producer-key, registry and positive max-per-slot are required")
 	}
 	certificates, err := loadCertificates(roots)
 	if err != nil {
@@ -96,6 +128,9 @@ func main() {
 		Version: tpmregistry.EvidenceVersion, RootCertificates: certificates,
 		RequireEKCertificateOID: *requireEKOID, MaxEvidenceBytes: *maxEvidence,
 		AllowedProfileHashes: allowedProfiles,
+	}
+	if err := policy.ConfigureCertificateProfile(*certificateProfile); err != nil {
+		log.Fatal(err)
 	}
 	policyHash, err := policy.Digest()
 	if err != nil {
@@ -165,29 +200,19 @@ func (agent *producerAgent) verifyNetwork(ctx context.Context) error {
 }
 
 func (agent *producerAgent) tick(ctx context.Context) error {
-	head, err := agent.client.BlockNumber(ctx)
+	header, err := agent.client.HeaderByNumber(ctx, nil)
 	if err != nil {
 		return err
 	}
+	if header == nil || header.Number == nil {
+		return errors.New("producer: canonical head is unavailable")
+	}
+	head := header.Number.Uint64()
+	agent.parentHash = header.Hash()
 	if err := agent.discoverRequests(ctx, head); err != nil {
 		return err
 	}
-	for requestID, tracked := range agent.requests {
-		request, err := agent.contract.Request(ctx, requestID)
-		if err == nil && request.Controller == tracked.event.Controller &&
-			request.StatementHash == tracked.event.StatementHash && !request.Finalized &&
-			head <= tracked.state.ResponseDeadline {
-			continue
-		}
-		delete(agent.requests, requestID)
-		prefix := requestID.String()
-		for key := range agent.staged {
-			if strings.Contains(key, prefix) {
-				delete(agent.staged, key)
-			}
-		}
-	}
-	stateNonce, err := agent.client.NonceAt(ctx, agent.address, nil)
+	stateNonce, err := agent.client.NonceAt(ctx, agent.address, header.Number)
 	if err != nil {
 		return err
 	}
@@ -203,7 +228,13 @@ func (agent *producerAgent) tick(ctx context.Context) error {
 		return err
 	}
 	target := head + 1
-	nextNonce, err := agent.stageApprovals(ctx, head, target, stateNonce, gasPrice)
+	// Recover reservations from the miner, including a prior process's queue or
+	// a transaction accepted before its RPC acknowledgement was lost.
+	nonce, err := agent.restoreQueue(ctx, target, stateNonce)
+	if err != nil {
+		return err
+	}
+	nextNonce, err := agent.stageApprovals(ctx, head, target, nonce, gasPrice)
 	if err != nil {
 		return err
 	}
@@ -224,12 +255,10 @@ func (agent *producerAgent) discoverRequests(ctx context.Context, head uint64) e
 	if err != nil {
 		return err
 	}
+	canonicalRequests := make(map[common.Hash]*trackedRequest)
 	for _, entry := range entries {
 		event, err := tpmregistry.ParseProducerRegistrationEvent(entry)
 		if err != nil || event.Removed || head > event.ResponseDeadline {
-			continue
-		}
-		if _, exists := agent.requests[event.RequestID]; exists {
 			continue
 		}
 		evidence, err := tpmregistry.DecodeEvidence(event.EvidenceBundle)
@@ -268,20 +297,27 @@ func (agent *producerAgent) discoverRequests(ctx context.Context, head uint64) e
 			log.Printf("reject request %s: statement mismatch", event.RequestID)
 			continue
 		}
-		agent.requests[event.RequestID] = &trackedRequest{event: event, evidence: evidence, state: producerState}
-		log.Printf("tracking request %s slots %d-%d", event.RequestID, producerState.FirstSlot, producerState.LastSlot)
+		canonicalRequests[event.RequestID] = &trackedRequest{event: event, evidence: evidence, state: producerState}
+		if _, exists := agent.requests[event.RequestID]; !exists {
+			log.Printf("tracking request %s slots %d-%d", event.RequestID, producerState.FirstSlot, producerState.LastSlot)
+		}
 	}
+	agent.requests = canonicalRequests
 	return nil
 }
 
 func (agent *producerAgent) stageChallenges(ctx context.Context, target, nonce uint64, gasPrice *big.Int) (uint64, error) {
-	staged := 0
-	for requestID, tracked := range agent.requests {
-		if staged >= agent.maxPerSlot || target < tracked.state.FirstSlot || target > tracked.state.LastSlot {
+	for _, requestID := range agent.sortedRequestIDs() {
+		tracked := agent.requests[requestID]
+		if target < tracked.state.FirstSlot || target > tracked.state.LastSlot {
 			continue
 		}
 		key := fmt.Sprintf("%s/%d", requestID, target)
 		if _, exists := agent.staged[key]; exists {
+			continue
+		}
+		if agent.queuedChallenges >= agent.maxPerSlot {
+			log.Printf("challenge capacity %d reached at slot %d; request %s remains unstaged (n-of-n enrollment can expire if any slot is missed)", agent.maxPerSlot, target, requestID)
 			continue
 		}
 		slot, err := agent.contract.ProducerSlot(ctx, requestID, target)
@@ -329,14 +365,15 @@ func (agent *producerAgent) stageChallenges(ctx context.Context, target, nonce u
 		}
 		agent.staged[key] = struct{}{}
 		nonce++
-		staged++
+		agent.queuedChallenges++
 		log.Printf("staged private challenge %s for request %s slot %d", accepted, requestID, target)
 	}
 	return nonce, nil
 }
 
 func (agent *producerAgent) stageApprovals(ctx context.Context, head, target, nonce uint64, gasPrice *big.Int) (uint64, error) {
-	for requestID, tracked := range agent.requests {
+	for _, requestID := range agent.sortedRequestIDs() {
+		tracked := agent.requests[requestID]
 		if head < tracked.state.FirstSlot || head > tracked.state.ResponseDeadline {
 			continue
 		}
@@ -408,9 +445,87 @@ func (agent *producerAgent) stagePrivateTransaction(ctx context.Context, target 
 	}
 	var accepted common.Hash
 	err = agent.rpc.CallContext(
-		ctx, &accepted, "miner_submitEnrollmentTransaction", hexutil.Uint64(target), hexutil.Bytes(raw),
+		ctx, &accepted, "miner_submitEnrollmentTransaction", hexutil.Uint64(target), hexutil.Bytes(raw), agent.parentHash,
 	)
+	if err == nil && accepted != transaction.Hash() {
+		return common.Hash{}, errors.New("producer: miner acknowledged a different transaction hash")
+	}
 	return accepted, err
+}
+
+func (agent *producerAgent) sortedRequestIDs() []common.Hash {
+	ids := make([]common.Hash, 0, len(agent.requests))
+	for id := range agent.requests {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return bytes.Compare(ids[i][:], ids[j][:]) < 0 })
+	return ids
+}
+
+func (agent *producerAgent) restoreQueue(ctx context.Context, target, stateNonce uint64) (uint64, error) {
+	var queue enrollmentQueue
+	if err := agent.rpc.CallContext(ctx, &queue, "miner_enrollmentQueue", hexutil.Uint64(target), agent.parentHash); err != nil {
+		return stateNonce, fmt.Errorf("producer: read branch-bound enrollment queue: %w", err)
+	}
+	if queue.ParentHash != agent.parentHash || uint64(queue.Target) != target {
+		return stateNonce, errors.New("producer: enrollment queue belongs to a different parent")
+	}
+	parsed, err := abi.JSON(strings.NewReader(tpmregistry.RegistryABI))
+	if err != nil {
+		return stateNonce, err
+	}
+	transactions := make([]*types.Transaction, 0, len(queue.Transactions))
+	for _, raw := range queue.Transactions {
+		var tx types.Transaction
+		if err := tx.UnmarshalBinary(raw); err != nil {
+			return stateNonce, err
+		}
+		transactions = append(transactions, &tx)
+	}
+	sort.Slice(transactions, func(i, j int) bool { return transactions[i].Nonce() < transactions[j].Nonce() })
+	staged := make(map[string]struct{})
+	challenges := 0
+	nonce := stateNonce
+	for _, tx := range transactions {
+		if tx.Nonce() != nonce || tx.To() == nil || *tx.To() != agent.registry {
+			return stateNonce, errors.New("producer: private queue has a nonce gap or unexpected destination")
+		}
+		sender, err := types.Sender(types.LatestSignerForChainID(agent.chainID), tx)
+		if err != nil || sender != agent.address {
+			return stateNonce, errors.New("producer: private queue contains a different sender")
+		}
+		if len(tx.Data()) < 4 {
+			return stateNonce, errors.New("producer: malformed private transaction")
+		}
+		method, err := parsed.MethodById(tx.Data()[:4])
+		if err != nil {
+			return stateNonce, err
+		}
+		values, err := method.Inputs.Unpack(tx.Data()[4:])
+		if err != nil || len(values) == 0 {
+			return stateNonce, errors.New("producer: malformed enrollment calldata")
+		}
+		requestID, ok := values[0].([32]byte)
+		if !ok {
+			return stateNonce, errors.New("producer: malformed enrollment request ID")
+		}
+		switch method.Name {
+		case "publishProducerChallenge":
+			staged[fmt.Sprintf("%s/%d", common.Hash(requestID), target)] = struct{}{}
+			challenges++
+		case "approveProducerSlot":
+			slot, ok := values[1].(uint64)
+			if !ok {
+				return stateNonce, errors.New("producer: malformed approval slot")
+			}
+			staged[fmt.Sprintf("approval/%s/%d/%d", common.Hash(requestID), slot, target)] = struct{}{}
+		default:
+			return stateNonce, errors.New("producer: unexpected enrollment method")
+		}
+		nonce++
+	}
+	agent.staged, agent.queuedChallenges = staged, challenges
+	return nonce, nil
 }
 
 func readPrivateKey(path string) (*ecdsa.PrivateKey, error) {

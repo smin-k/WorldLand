@@ -43,6 +43,7 @@ type Evidence struct {
 
 // Policy defines the certificate and TPM profile accepted by one validator epoch.
 type Policy struct {
+	CertificateProfile      string
 	Version                 uint32
 	RootCertificates        []*x509.Certificate
 	RequireEKCertificateOID bool
@@ -54,7 +55,7 @@ type Policy struct {
 // ValidatedEvidence contains values derived only after all static checks pass.
 type ValidatedEvidence struct {
 	EvidenceHash    common.Hash
-	EKName          []byte
+	EKName          []byte // canonical profile Name, not claimant-supplied TPM bytes
 	AttestationName []byte
 	DeviceNullifier common.Hash
 	DID             common.Hash
@@ -96,6 +97,9 @@ func DecodeEvidence(encoded []byte) (*Evidence, error) {
 
 // Digest commits to all validation inputs that governance assigns to an epoch.
 func (p *Policy) Digest() (common.Hash, error) {
+	if err := p.validateCertificatePolicy(); err != nil {
+		return common.Hash{}, err
+	}
 	if p == nil || len(p.RootCertificates) == 0 {
 		return common.Hash{}, errors.New("tpmregistry: policy has no EK roots")
 	}
@@ -110,19 +114,24 @@ func (p *Policy) Digest() (common.Hash, error) {
 	profiles := append([]common.Hash(nil), p.AllowedProfileHashes...)
 	sort.Slice(profiles, func(i, j int) bool { return bytes.Compare(profiles[i][:], profiles[j][:]) < 0 })
 	encoded, err := rlp.EncodeToBytes(struct {
+		EnrollmentRules         common.Hash
 		Version                 uint32
 		RootHashes              []common.Hash
 		RequireEKCertificateOID bool
 		MaxEvidenceBytes        uint64
 		AllowedProfileHashes    []common.Hash
-	}{p.Version, rootHashes, p.RequireEKCertificateOID, p.MaxEvidenceBytes, profiles})
+	}{enrollmentRulesDigest, p.Version, rootHashes, p.RequireEKCertificateOID, p.MaxEvidenceBytes, profiles})
 	if err != nil {
 		return common.Hash{}, err
+	}
+	if p.CertificateProfile == CertificateProfileGCPCAS {
+		return crypto.Keccak256Hash([]byte("WorldLand certificate profile gcp-cas-v1\x00"), encoded), nil
 	}
 	return crypto.Keccak256Hash(encoded), nil
 }
 
-// DeviceNullifier implements H(chain context || canonical EK Name).
+// DeviceNullifier implements H(chain context || canonical EK Name). Callers must
+// obtain ekName from CanonicalEKName, not trust a claimant-supplied TPM Name.
 func DeviceNullifier(chainID *big.Int, registry common.Address, ekName []byte) common.Hash {
 	chainWord := make([]byte, 32)
 	chainID.FillBytes(chainWord)
@@ -133,6 +142,9 @@ func DeviceNullifier(chainID *big.Int, registry common.Address, ekName []byte) c
 func (p *Policy) ValidateEvidence(chainID *big.Int, registry common.Address, evidence *Evidence) (*ValidatedEvidence, error) {
 	if p == nil || evidence == nil {
 		return nil, errors.New("tpmregistry: policy and evidence are required")
+	}
+	if err := p.validateCertificatePolicy(); err != nil {
+		return nil, err
 	}
 	if evidence.Version != EvidenceVersion {
 		return nil, fmt.Errorf("tpmregistry: unsupported evidence version %d", evidence.Version)
@@ -173,7 +185,12 @@ func (p *Policy) ValidateEvidence(chainID *big.Int, registry common.Address, evi
 	if p.RequireEKCertificateOID && !hasUnknownEKUsage(certificate) {
 		return nil, errors.New("tpmregistry: EK certificate is missing tcg-kp-EKCertificate OID")
 	}
-	ekPublic, ekName, err := tpmwork.ParsePublicArea(evidence.EKPublicArea)
+	if p.CertificateProfile == CertificateProfileGCPCAS {
+		if err := validateGCPEKCertificate(certificate); err != nil {
+			return nil, err
+		}
+	}
+	ekPublic, _, err := tpmwork.ParsePublicArea(evidence.EKPublicArea)
 	if err != nil {
 		return nil, fmt.Errorf("tpmregistry: parse EK public area: %w", err)
 	}
@@ -182,9 +199,9 @@ func (p *Policy) ValidateEvidence(chainID *big.Int, registry common.Address, evi
 	if !ok || !certOK || ekRSA.E != certRSA.E || ekRSA.N.Cmp(certRSA.N) != 0 {
 		return nil, errors.New("tpmregistry: EK certificate does not match RSA EK public area")
 	}
-	ekRequired := uint32(tpmwork.ObjectFixedTPM | tpmwork.ObjectFixedParent | tpmwork.ObjectSensitiveDataOrigin | tpmwork.ObjectRestricted | tpmwork.ObjectDecrypt)
-	if err := tpmwork.VerifyPublicAreaAttributes(evidence.EKPublicArea, ekRequired, tpmwork.ObjectSignEncrypt); err != nil {
-		return nil, fmt.Errorf("tpmregistry: invalid EK attributes: %w", err)
+	ekName, err := CanonicalEKName(evidence.EKPublicArea)
+	if err != nil {
+		return nil, err
 	}
 	attestationPublic, attestationName, err := tpmwork.ParsePublicArea(evidence.AttestationPublicArea)
 	if err != nil {
@@ -209,11 +226,9 @@ func (p *Policy) ValidateEvidence(chainID *big.Int, registry common.Address, evi
 	if _, err := tpmwork.ParsePublicKey(evidence.WorkPublicKey); err != nil {
 		return nil, err
 	}
-	if len(evidence.VRFPublicKey) != 65 {
-		return nil, errors.New("tpmregistry: VRF public key must be uncompressed secp256k1")
-	}
-	if _, err := crypto.UnmarshalPubkey(evidence.VRFPublicKey); err != nil {
-		return nil, fmt.Errorf("tpmregistry: invalid VRF public key: %w", err)
+	vrfKeyHash, err := VRFKeyHash(evidence.VRFPublicKey)
+	if err != nil {
+		return nil, err
 	}
 	profileHash := crypto.Keccak256Hash(evidence.Profile)
 	if len(p.AllowedProfileHashes) != 0 && !containsHash(p.AllowedProfileHashes, profileHash) {
@@ -227,7 +242,7 @@ func (p *Policy) ValidateEvidence(chainID *big.Int, registry common.Address, evi
 		DeviceNullifier: nullifier,
 		DID:             DeriveDID(chainID, registry, nullifier),
 		WorkKeyHash:     crypto.Keccak256Hash(evidence.WorkPublicKey),
-		VRFKeyHash:      crypto.Keccak256Hash(evidence.VRFPublicKey),
+		VRFKeyHash:      vrfKeyHash,
 		ProfileHash:     profileHash,
 	}, nil
 }

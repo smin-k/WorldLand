@@ -65,6 +65,9 @@ func (ecc *ECC) Author(header *types.Header) (common.Address, error) {
 }
 
 func (ecc *ECC) VerifyHeader(chain consensus.ChainHeaderReader, header *types.Header, seal bool) error {
+	if err := ecc.bindChainContext(chain); err != nil {
+		return err
+	}
 	if ecc.config.PowMode == ModeFullFake {
 		return nil
 	}
@@ -80,6 +83,13 @@ func (ecc *ECC) VerifyHeader(chain consensus.ChainHeaderReader, header *types.He
 }
 
 func (ecc *ECC) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*types.Header, seals []bool) (chan<- struct{}, <-chan error) {
+	if err := ecc.bindChainContext(chain); err != nil {
+		abort, results := make(chan struct{}), make(chan error, len(headers))
+		for range headers {
+			results <- err
+		}
+		return abort, results
+	}
 	if ecc.config.PowMode == ModeFullFake || len(headers) == 0 {
 		abort, results := make(chan struct{}), make(chan error, len(headers))
 		for range headers {
@@ -98,10 +108,12 @@ func (ecc *ECC) VerifyHeaders(chain consensus.ChainHeaderReader, headers []*type
 		abort   = make(chan struct{})
 		unixNow = time.Now().Unix()
 	)
+	batchIndex := batchHeaderIndex(headers)
 	for i := 0; i < workers; i++ {
 		go func() {
 			for index := range inputs {
-				errs[index] = ecc.verifyHeaderWorker(chain, headers, seals, index, unixNow)
+				context := &batchHeaderReader{ChainHeaderReader: chain, headers: batchIndex, limit: index}
+				errs[index] = ecc.verifyHeaderWorker(context, headers, seals, index, unixNow)
 				done <- index
 			}
 		}()
@@ -264,6 +276,9 @@ func verifyTPMFieldEra(header *types.Header, active bool) error {
 }
 
 func (ecc *ECC) verifyHeader(chain consensus.ChainHeaderReader, header, parent *types.Header, uncle bool, seal bool, unixNow int64) error {
+	if err := ecc.bindChainContext(chain); err != nil {
+		return err
+	}
 	if uint64(len(header.Extra)) > params.MaximumExtraDataSize {
 		return fmt.Errorf("extra-data too long: %d > %d", len(header.Extra), params.MaximumExtraDataSize)
 	}
@@ -522,6 +537,11 @@ var FrontierDifficultyCalculator = calcDifficultyFrontier
 var DynamicDifficultyCalculator = makeDifficultyCalculator
 
 func (ecc *ECC) verifySeal(chain consensus.ChainHeaderReader, header *types.Header) error {
+	if chain != nil {
+		if err := ecc.bindChainContext(chain); err != nil {
+			return err
+		}
+	}
 	if ecc.config.PowMode == ModeFake || ecc.config.PowMode == ModeFullFake {
 		time.Sleep(ecc.fakeDelay)
 		if ecc.fakeFail == header.Number.Uint64() {
@@ -534,12 +554,6 @@ func (ecc *ECC) verifySeal(chain consensus.ChainHeaderReader, header *types.Head
 	}
 	if header.Difficulty.Sign() <= 0 {
 		return errInvalidDifficulty
-	}
-
-	if chain != nil && chain.Config().ChainID != nil {
-		ecc.lock.Lock()
-		ecc.chainID = chain.Config().ChainID
-		ecc.lock.Unlock()
 	}
 
 	isVCTBlock := chain != nil && chain.Config().IsVCT(header.Number)
@@ -592,6 +606,9 @@ func (ecc *ECC) verifySeal(chain consensus.ChainHeaderReader, header *types.Head
 }
 
 func (ecc *ECC) Prepare(chain consensus.ChainHeaderReader, header *types.Header) error {
+	if err := ecc.bindChainContext(chain); err != nil {
+		return err
+	}
 	parent := chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
 	if parent == nil {
 		return consensus.ErrUnknownAncestor
@@ -602,11 +619,6 @@ func (ecc *ECC) Prepare(chain consensus.ChainHeaderReader, header *types.Header)
 		header.EligibilityThreshold = nil
 	}
 	header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parent)
-	if chain.Config().ChainID != nil {
-		ecc.lock.Lock()
-		ecc.chainID = chain.Config().ChainID
-		ecc.lock.Unlock()
-	}
 	return nil
 }
 

@@ -145,3 +145,9 @@ type PoW interface {
 type ProposerVerifier interface {
 	VerifyProposerEligibility(chain ChainHeaderReader, header, parent *types.Header, parentState *state.StateDB) error
 }
+
+// BlockTemplatePreparer selects all execution-sensitive mining header fields
+// before transactions are executed. Seal must preserve that template.
+type BlockTemplatePreparer interface {
+	PrepareBlockTemplate(chain ChainHeaderReader, header *types.Header) error
+}

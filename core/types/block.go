@@ -96,7 +96,7 @@ type Header struct {
 	VRFPublicKey []byte `json:"vrfPublicKey" rlp:"optional"`
 	// VRFSignature is the per-nonce ECDSA mining signature (65 bytes) for anti-delegation.
 	VRFSignature []byte `json:"vrfSignature" rlp:"optional"`
-	// EligibilityThreshold is the VCT base VRF uint256 threshold for this block.
+	// EligibilityThreshold is the VCT base VRF threshold in [0, 2^256].
 	// The 32-byte VRF output is interpreted as a big-endian uint256 and compared
 	// against this value. Nil means absent in legacy/pre-VCT headers.
 	EligibilityThreshold *big.Int `json:"eligibilityThreshold" rlp:"optional"`
@@ -125,7 +125,13 @@ type headerMarshaling struct {
 	BaseFee              *hexutil.Big
 	Codeword             hexutil.Bytes
 	CodeLength           hexutil.Uint64
-	EligibilityThreshold *hexutil.Big
+	VRFProof             hexutil.Bytes
+	VRFPublicKey         hexutil.Bytes
+	VRFSignature         hexutil.Bytes
+	TPMDID               hexutil.Bytes
+	TPMWorkPublicKey     hexutil.Bytes
+	TPMWorkSignature     hexutil.Bytes
+	EligibilityThreshold *eligibilityThresholdJSON
 	Hash                 common.Hash `json:"hash"` // adds call to Hash() in MarshalJSON
 }
 

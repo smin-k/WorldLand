@@ -227,8 +227,9 @@ type worker struct {
 	pendingMu    sync.RWMutex
 	pendingTasks map[common.Hash]*task
 
-	privateTxMu sync.RWMutex
-	privateTxs  map[uint64][]*types.Transaction
+	privateTxMu   sync.RWMutex
+	privateTxs    map[uint64][]*types.Transaction
+	privateParent common.Hash // All queued transactions belong to this exact parent.
 
 	snapshotMu       sync.RWMutex // The lock used to protect the snapshots below
 	snapshotBlock    *types.Block
@@ -684,6 +685,14 @@ func (w *worker) taskLoop() {
 	}
 }
 
+// taskForResult never guesses by height: competing templates can have different
+// parents, transactions, execution timestamps, state roots and receipts.
+func (w *worker) taskForResult(block *types.Block) *task {
+	w.pendingMu.RLock()
+	defer w.pendingMu.RUnlock()
+	return w.pendingTasks[w.engine.SealHash(block.Header())]
+}
+
 // resultLoop is a standalone goroutine to handle sealing result submitting
 // and flush relative data to the database.
 func (w *worker) resultLoop() {
@@ -703,22 +712,17 @@ func (w *worker) resultLoop() {
 				sealhash = w.engine.SealHash(block.Header())
 				hash     = block.Hash()
 			)
-			w.pendingMu.RLock()
-			task, exist := w.pendingTasks[sealhash]
-			if !exist {
-				// VCT progressive timeout: Seal() may update header.Time/Difficulty,
-				// shifting the sealhash. Fall back to block-number lookup.
-				for _, t := range w.pendingTasks {
-					if t.block.NumberU64() == block.NumberU64() {
-						task = t
-						exist = true
-						break
-					}
-				}
-			}
-			w.pendingMu.RUnlock()
-			if !exist {
+			task := w.taskForResult(block)
+			if task == nil {
 				log.Error("Block found but no relative pending task", "number", block.Number(), "sealhash", sealhash, "hash", hash)
+				continue
+			}
+			var usedGas uint64
+			if len(task.receipts) != 0 {
+				usedGas = task.receipts[len(task.receipts)-1].CumulativeGasUsed
+			}
+			if err := w.chain.Validator().ValidateState(block, task.state, task.receipts, usedGas); err != nil {
+				log.Error("Sealed block does not match its executed task", "err", err, "hash", hash)
 				continue
 			}
 			// Different block could share same sealhash, deep copy here to prevent write-write conflict.
@@ -1032,6 +1036,16 @@ func (w *worker) prepareWork(genParams *generateParams) (*environment, error) {
 		log.Error("Failed to prepare header for sealing", "err", err)
 		return nil, err
 	}
+	// VCT must select timeout time and identity fields before EVM execution.
+	// Keep ordinary pending-block construction usable without an unlocked key.
+	if preparer, ok := w.engine.(consensus.BlockTemplatePreparer); ok && genParams.coinbase != (common.Address{}) {
+		if err := preparer.PrepareBlockTemplate(w.chain, header); err != nil {
+			return nil, err
+		}
+		if genParams.forceTime && header.Time != timestamp {
+			return nil, fmt.Errorf("requested timestamp is not eligible for this producer")
+		}
+	}
 	// Could potentially happen if starting to mine in an odd state.
 	// Note genParams.coinbase can be different with header.Coinbase
 	// since clique algorithm can modify the coinbase field in header.
@@ -1096,10 +1110,18 @@ func (w *worker) fillTransactions(interrupt *int32, env *environment) error {
 // submitPrivateEnrollmentTransaction stages a transaction only for one local
 // candidate height. It is never added to the public transaction pool.
 func (w *worker) submitPrivateEnrollmentTransaction(target uint64, tx *types.Transaction) error {
+	return w.submitPrivateEnrollmentForParent(target, tx, nil)
+}
+
+func (w *worker) submitPrivateEnrollmentForParent(target uint64, tx *types.Transaction, expectedParent *common.Hash) error {
 	if tx == nil || tx.To() == nil {
 		return errors.New("miner: invalid private enrollment transaction")
 	}
-	head := w.chain.CurrentBlock().NumberU64()
+	parent := w.chain.CurrentBlock()
+	head := parent.NumberU64()
+	if expectedParent != nil && *expectedParent != parent.Hash() {
+		return errors.New("miner: private enrollment parent is no longer canonical")
+	}
 	if target != head+1 {
 		return fmt.Errorf("miner: target block %d is not next canonical height %d", target, head+1)
 	}
@@ -1125,13 +1147,25 @@ func (w *worker) submitPrivateEnrollmentTransaction(target uint64, tx *types.Tra
 		return errors.New("miner: transaction is not a producer enrollment call")
 	}
 	w.privateTxMu.Lock()
+	if w.chain.CurrentBlock().Hash() != parent.Hash() {
+		w.privateTxMu.Unlock()
+		return errors.New("miner: canonical parent changed while staging transaction")
+	}
+	if w.privateParent != parent.Hash() {
+		w.privateTxs = make(map[uint64][]*types.Transaction)
+		w.privateParent = parent.Hash()
+	}
 	for height := range w.privateTxs {
 		if height < target {
 			delete(w.privateTxs, height)
 		}
 	}
 	for _, existing := range w.privateTxs[target] {
-		if existing.Hash() == tx.Hash() || existing.Nonce() == tx.Nonce() {
+		if existing.Hash() == tx.Hash() {
+			w.privateTxMu.Unlock()
+			return nil // A lost RPC acknowledgement is safe to retry.
+		}
+		if existing.Nonce() == tx.Nonce() {
 			w.privateTxMu.Unlock()
 			return errors.New("miner: duplicate private enrollment transaction")
 		}
@@ -1148,13 +1182,32 @@ func (w *worker) submitPrivateEnrollmentTransaction(target uint64, tx *types.Tra
 }
 
 func (w *worker) privateEnrollmentTransactions(target uint64) []*types.Transaction {
+	return w.privateEnrollmentForParent(target, w.chain.CurrentBlock().Hash())
+}
+
+func (w *worker) privateEnrollmentForParent(target uint64, parent common.Hash) []*types.Transaction {
 	w.privateTxMu.RLock()
 	defer w.privateTxMu.RUnlock()
+	if w.privateParent != parent {
+		return nil
+	}
 	return append([]*types.Transaction(nil), w.privateTxs[target]...)
 }
 
+func (w *worker) enrollmentQueue(target uint64, parent common.Hash) ([]*types.Transaction, error) {
+	head := w.chain.CurrentBlock()
+	if head.Hash() != parent || target != head.NumberU64()+1 {
+		return nil, errors.New("miner: enrollment queue requires the next canonical parent and height")
+	}
+	txs := w.privateEnrollmentForParent(target, parent)
+	if w.chain.CurrentBlock().Hash() != parent {
+		return nil, errors.New("miner: canonical parent changed while reading enrollment queue")
+	}
+	return txs, nil
+}
+
 func (w *worker) commitPrivateEnrollmentTransactions(env *environment) {
-	transactions := w.privateEnrollmentTransactions(env.header.Number.Uint64())
+	transactions := w.privateEnrollmentForParent(env.header.Number.Uint64(), env.header.ParentHash)
 	if len(transactions) == 0 {
 		return
 	}

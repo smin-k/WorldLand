@@ -60,6 +60,26 @@ type commandConfig struct {
 	timeout            time.Duration
 }
 
+type enrollmentBackend interface {
+	bind.DeployBackend
+	BlockNumber(context.Context) (uint64, error)
+	HeaderByNumber(context.Context, *big.Int) (*types.Header, error)
+	FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error)
+}
+
+type activationRegistry interface {
+	ActivationBlock(context.Context, common.Hash) (*big.Int, error)
+	Registration(context.Context, common.Hash) (tpmregistry.RegistrationState, error)
+	Activate(*bind.TransactOpts, common.Hash) (*types.Transaction, error)
+}
+
+type producerEnrollmentRegistry interface {
+	ProducerRequest(context.Context, common.Hash) (tpmregistry.ProducerRequestState, error)
+	ProducerSlot(context.Context, common.Hash, uint64) (tpmregistry.ProducerSlotState, error)
+	SubmitProducerResponse(*bind.TransactOpts, common.Hash, uint64, common.Hash, []byte) (*types.Transaction, error)
+	FinalizeProducer(*bind.TransactOpts, common.Hash, tpmregistry.EnrollmentData) (*types.Transaction, error)
+}
+
 func main() {
 	var validators repeatedFlag
 	var intermediates repeatedFlag
@@ -68,10 +88,10 @@ func main() {
 	registryHex := flag.String("registry", "0x0000000000000000000000000000000000000801", "registry address")
 	chainIDValue := flag.Int64("chain-id", 0, "chain ID")
 	controllerKey := flag.String("controller-key", "", "controller secp256k1 private-key file")
-	workKey := flag.String("work-key", "WorldLand-TPM-Work", "Windows TPM work-key name")
-	attestationKey := flag.String("attestation-key", "WorldLand-TPM-AIK", "Windows TPM attestation-key name")
+	workKey := flag.String("work-key", "WorldLand-TPM-Work", "TPM work-key name (Linux: documented alias or persistent handle)")
+	attestationKey := flag.String("attestation-key", "WorldLand-TPM-AIK", "TPM attestation-key name (Linux: documented alias or persistent handle)")
 	createKeys := flag.Bool("create", false, "create missing TPM work and attestation keys")
-	vrfPublicKey := flag.String("vrf-public-key", "", "65-byte uncompressed secp256k1 public-key file")
+	vrfPublicKey := flag.String("vrf-public-key", "", "33-byte compressed or 65-byte uncompressed controller secp256k1 public-key file")
 	profile := flag.String("profile", "", "canonical TPM profile document")
 	ekHandle := flag.Uint64("ek-handle", uint64(tpmwork.DefaultRSAEKHandle), "persistent RSA EK handle")
 	ekCertificateIndex := flag.Uint64("ek-certificate-index", uint64(tpmwork.DefaultRSAEKCertificateIndex), "RSA EK certificate NV index")
@@ -183,8 +203,9 @@ func register(ctx context.Context, config commandConfig, backend *ethclient.Clie
 	if err != nil {
 		return err
 	}
-	if len(vrfPublicKey) != 65 {
-		return fmt.Errorf("tpmenroll: VRF public key is %d bytes, want 65", len(vrfPublicKey))
+	vrfKeyHash, err := validateControllerVRFKey(vrfPublicKey, auth.From)
+	if err != nil {
+		return err
 	}
 	profile, err := os.ReadFile(config.profileFile)
 	if err != nil {
@@ -226,11 +247,15 @@ func register(ctx context.Context, config commandConfig, backend *ethclient.Clie
 	if err != nil {
 		return err
 	}
-	nullifier := tpmregistry.DeviceNullifier(config.chainID, config.registry, identity.EKName)
+	ekName, err := tpmregistry.CanonicalEKName(identity.EKPublicArea)
+	if err != nil {
+		return fmt.Errorf("tpmenroll: canonical EK: %w", err)
+	}
+	nullifier := tpmregistry.DeviceNullifier(config.chainID, config.registry, ekName)
 	identityHash := tpmregistry.DeriveConsensusIdentity(config.chainID, config.registry, nullifier)
 	enrollment := tpmregistry.EnrollmentData{
 		DID: identityHash, WorkKeyHash: crypto.Keccak256Hash(evidence.WorkPublicKey),
-		VRFKeyHash:  crypto.Keccak256Hash(evidence.VRFPublicKey),
+		VRFKeyHash:  vrfKeyHash,
 		ProfileHash: crypto.Keccak256Hash(evidence.Profile), DeviceNullifier: nullifier,
 		EvidenceHash: evidenceHash,
 	}
@@ -342,7 +367,22 @@ func register(ctx context.Context, config commandConfig, backend *ethclient.Clie
 	return finishActivation(ctx, config, backend, registry, auth, identityHash)
 }
 
-func finishActivation(ctx context.Context, config commandConfig, backend *ethclient.Client, registry *tpmregistry.RegistryClient, auth *bind.TransactOpts, identityHash common.Hash) error {
+func validateControllerVRFKey(encoded []byte, controller common.Address) (common.Hash, error) {
+	canonical, err := tpmregistry.CanonicalVRFPublicKey(encoded)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("tpmenroll: VRF public key: %w", err)
+	}
+	publicKey, err := crypto.DecompressPubkey(canonical)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	if crypto.PubkeyToAddress(*publicKey) != controller {
+		return common.Hash{}, errors.New("tpmenroll: VRF public key must belong to the registration controller and mining coinbase")
+	}
+	return tpmregistry.VRFKeyHash(canonical)
+}
+
+func finishActivation(ctx context.Context, config commandConfig, backend enrollmentBackend, registry activationRegistry, auth *bind.TransactOpts, identityHash common.Hash) error {
 	activationBlock, err := registry.ActivationBlock(ctx, identityHash)
 	if err != nil {
 		return err
@@ -352,6 +392,13 @@ func finishActivation(ctx context.Context, config commandConfig, backend *ethcli
 		return nil
 	}
 	for {
+		registration, err := registry.Registration(ctx, identityHash)
+		if err != nil {
+			return err
+		}
+		if registration.Active {
+			return nil
+		}
 		blockNumber, err := backend.BlockNumber(ctx)
 		if err != nil {
 			return err
@@ -367,16 +414,25 @@ func finishActivation(ctx context.Context, config commandConfig, backend *ethcli
 	}
 	activateTransaction, err := registry.Activate(auth, identityHash)
 	if err != nil {
+		if registration, readErr := registry.Registration(ctx, identityHash); readErr == nil && registration.Active {
+			return nil
+		}
 		return err
 	}
-	return waitSuccessful(ctx, backend, "activate", activateTransaction)
+	if err := waitSuccessful(ctx, backend, "activate", activateTransaction); err != nil {
+		if registration, readErr := registry.Registration(ctx, identityHash); readErr == nil && registration.Active {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func completeProducerRegistration(
 	ctx context.Context,
 	config commandConfig,
-	backend *ethclient.Client,
-	registry *tpmregistry.RegistryClient,
+	backend enrollmentBackend,
+	registry producerEnrollmentRegistry,
 	auth *bind.TransactOpts,
 	activator tpmwork.CredentialActivator,
 	certifier tpmwork.KeyCertifier,
@@ -384,7 +440,6 @@ func completeProducerRegistration(
 	enrollment tpmregistry.EnrollmentData,
 	producerRequest tpmregistry.ProducerRequestState,
 ) error {
-	responded := make(map[uint64]struct{})
 	for {
 		current, err := backend.BlockNumber(ctx)
 		if err != nil {
@@ -393,6 +448,14 @@ func completeProducerRegistration(
 		producerRequest, err = registry.ProducerRequest(ctx, requestID)
 		if err != nil {
 			return err
+		}
+		if producerRequest.Threshold == 0 {
+			// A reorg can temporarily remove the begin transaction. A missing
+			// request is not a zero-of-zero approval quorum.
+			if err := waitEnrollmentPoll(ctx); err != nil {
+				return err
+			}
+			continue
 		}
 		if producerRequest.Approvals >= producerRequest.Threshold {
 			tx, err := registry.FinalizeProducer(auth, requestID, enrollment)
@@ -428,15 +491,11 @@ func completeProducerRegistration(
 				if err != nil || challenge.Removed {
 					continue
 				}
-				if _, ok := responded[challenge.Slot]; ok {
-					continue
-				}
-				slotState, err := registry.ProducerSlot(ctx, requestID, challenge.Slot)
+				slotState, currentChallenge, err := readCurrentChallenge(ctx, backend, registry, entry, challenge)
 				if err != nil {
 					return err
 				}
-				if slotState.Responded {
-					responded[challenge.Slot] = struct{}{}
+				if !currentChallenge || slotState.Responded {
 					continue
 				}
 				activated, err := activator.ActivateCredential(
@@ -465,24 +524,69 @@ func completeProducerRegistration(
 				if err != nil {
 					return err
 				}
+				// TPM operations can take longer than a block. Recheck the exact
+				// canonical challenge before publishing its response.
+				latestSlot, currentChallenge, err := readCurrentChallenge(ctx, backend, registry, entry, challenge)
+				if err != nil {
+					return err
+				}
+				if !currentChallenge || latestSlot.Responded {
+					continue
+				}
 				tx, err := registry.SubmitProducerResponse(
 					auth, requestID, challenge.Slot, common.BytesToHash(activated), evidenceBundle,
 				)
 				if err != nil {
+					if slot, same, readErr := readCurrentChallenge(ctx, backend, registry, entry, challenge); readErr == nil && (!same || slot.Responded) {
+						continue
+					}
 					return fmt.Errorf("tpmenroll: submit slot %d response: %w", challenge.Slot, err)
 				}
 				if err := waitSuccessful(ctx, backend, fmt.Sprintf("producer response slot %d", challenge.Slot), tx); err != nil {
+					if slot, same, readErr := readCurrentChallenge(ctx, backend, registry, entry, challenge); readErr == nil && (!same || slot.Responded) {
+						continue
+					}
 					return err
 				}
-				responded[challenge.Slot] = struct{}{}
 			}
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
+		if err := waitEnrollmentPoll(ctx); err != nil {
+			return err
 		}
 	}
+}
+
+func waitEnrollmentPoll(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(2 * time.Second):
+		return nil
+	}
+}
+
+// readCurrentChallenge deliberately has no responded-by-height cache: a reorg
+// may replace a challenge at the same slot or remove its previously mined reply.
+func readCurrentChallenge(ctx context.Context, backend enrollmentBackend, registry producerEnrollmentRegistry, entry types.Log, challenge tpmregistry.ProducerChallengeEvent) (tpmregistry.ProducerSlotState, bool, error) {
+	header, err := backend.HeaderByNumber(ctx, new(big.Int).SetUint64(entry.BlockNumber))
+	if err != nil {
+		if errors.Is(err, ethereum.NotFound) {
+			return tpmregistry.ProducerSlotState{}, false, nil
+		}
+		return tpmregistry.ProducerSlotState{}, false, err
+	}
+	if header == nil || header.Hash() != entry.BlockHash || challenge.Removed || entry.Removed || entry.BlockNumber != challenge.Slot {
+		return tpmregistry.ProducerSlotState{}, false, nil
+	}
+	slot, err := registry.ProducerSlot(ctx, challenge.RequestID, challenge.Slot)
+	if err != nil {
+		return slot, false, err
+	}
+	credentialHash, err := tpmregistry.CredentialHash(challenge.CredentialBlob, challenge.EncryptedSecret)
+	if err != nil {
+		return slot, false, err
+	}
+	return slot, slot.Producer == challenge.Producer && slot.Commitment == challenge.Commitment && slot.CredentialHash == credentialHash, nil
 }
 
 func requestApproval(ctx context.Context, endpoint string, statement tpmregistry.EnrollmentStatement, evidence tpmregistry.Evidence, activator tpmwork.CredentialActivator, certifier tpmwork.KeyCertifier, config commandConfig) ([]byte, common.Address, error) {

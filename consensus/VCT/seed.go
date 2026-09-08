@@ -37,6 +37,9 @@ func vrfSeedHeader(chain consensus.ChainHeaderReader, parent *types.Header, bloc
 }
 
 func (ecc *ECC) delayedVRFMessage(chain consensus.ChainHeaderReader, parent *types.Header, blockNumber uint64) ([]byte, error) {
+	if err := ecc.bindChainContext(chain); err != nil {
+		return nil, err
+	}
 	seed, err := vrfSeedHeader(chain, parent, blockNumber)
 	if err != nil {
 		return nil, err

@@ -90,6 +90,72 @@ func TestValidateEvidenceAndMakeCredential(t *testing.T) {
 	if validated.WorkKeyHash != worldcrypto.Keccak256Hash(evidence.WorkPublicKey) || validated.DID == (common.Hash{}) {
 		t.Fatal("validated evidence derived incorrect enrollment values")
 	}
+	t.Run("equivalent EK exponent has one identity", func(t *testing.T) {
+		alternate := *evidence
+		alternate.EKPublicArea = append([]byte(nil), evidence.EKPublicArea...)
+		// RSA-2048 EK profile: attributes, 32-byte policy, AES-CFB,
+		// NULL scheme and keyBits precede the four-byte exponent at 52.
+		binary.BigEndian.PutUint32(alternate.EKPublicArea[52:56], 0)
+		result, err := policy.ValidateEvidence(chainID, registry, &alternate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.DeviceNullifier != validated.DeviceNullifier || result.DID != validated.DID || !bytes.Equal(result.EKName, validated.EKName) {
+			t.Fatal("equivalent encodings of one certified EK created different identities")
+		}
+	})
+	t.Run("forged EK auth policy is rejected", func(t *testing.T) {
+		alternate := *evidence
+		alternate.EKPublicArea = append([]byte(nil), evidence.EKPublicArea...)
+		alternate.EKPublicArea[10] ^= 1
+		if _, err := policy.ValidateEvidence(chainID, registry, &alternate); err == nil {
+			t.Fatal("claimant-controlled EK authPolicy was accepted")
+		}
+	})
+	t.Run("noncanonical EK attributes are rejected", func(t *testing.T) {
+		alternate := *evidence
+		alternate.EKPublicArea = append([]byte(nil), evidence.EKPublicArea...)
+		attributes := binary.BigEndian.Uint32(alternate.EKPublicArea[4:8])
+		binary.BigEndian.PutUint32(alternate.EKPublicArea[4:8], attributes|0x400) // noDA
+		if _, err := policy.ValidateEvidence(chainID, registry, &alternate); err == nil {
+			t.Fatal("an unapproved EK template was accepted")
+		}
+	})
+	t.Run("VRF encoding agrees with consensus", func(t *testing.T) {
+		compressed := worldcrypto.CompressPubkey(&vrfKey.PublicKey)
+		if validated.VRFKeyHash != worldcrypto.Keccak256Hash(compressed) {
+			t.Error("uncompressed enrollment VRF key does not bind consensus compressed key")
+		}
+		alternate := *evidence
+		alternate.VRFPublicKey = compressed
+		result, err := policy.ValidateEvidence(chainID, registry, &alternate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.VRFKeyHash != validated.VRFKeyHash {
+			t.Fatal("VRF key encodings produced different registered key hashes")
+		}
+	})
+	t.Run("different certified EK has different identity", func(t *testing.T) {
+		otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatal(err)
+		}
+		otherCertificate, err := x509.CreateCertificate(rand.Reader, ekTemplate, root, &otherKey.PublicKey, rootKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		alternate := *evidence
+		alternate.EKCertificateDER = otherCertificate
+		alternate.EKPublicArea = marshalRSAEnrollmentPublic(&otherKey.PublicKey, true)
+		result, err := policy.ValidateEvidence(chainID, registry, &alternate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.DeviceNullifier == validated.DeviceNullifier || result.DID == validated.DID {
+			t.Fatal("different certified EKs were merged into one identity")
+		}
+	})
 	credentialBlob, encryptedSecret, err := MakeCredential(evidence, bytes.Repeat([]byte{0x42}, 32))
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +186,7 @@ func marshalRSAEnrollmentPublic(public *rsa.PublicKey, endorsement bool) []byte 
 	)
 	attributes := uint32(tpmwork.ObjectFixedTPM | tpmwork.ObjectFixedParent | tpmwork.ObjectSensitiveDataOrigin | tpmwork.ObjectRestricted)
 	if endorsement {
-		attributes |= tpmwork.ObjectDecrypt
+		attributes |= tpmwork.ObjectDecrypt | 0x80 // adminWithPolicy
 	} else {
 		attributes |= tpmwork.ObjectSignEncrypt
 	}
@@ -128,7 +194,12 @@ func marshalRSAEnrollmentPublic(public *rsa.PublicKey, endorsement bool) []byte 
 	writeEnrollmentU16(&area, algRSA)
 	writeEnrollmentU16(&area, algSHA256)
 	_ = binary.Write(&area, binary.BigEndian, attributes)
-	writeEnrollmentTPM2B(&area, nil)
+	if endorsement {
+		// Standard RSA-2048 EK endorsement PolicySecret policy.
+		writeEnrollmentTPM2B(&area, common.FromHex("837197674484b3f81a90cc8d46a5d724fd52d76e06520b64f2a1da1b331469aa"))
+	} else {
+		writeEnrollmentTPM2B(&area, nil)
+	}
 	if endorsement {
 		writeEnrollmentU16(&area, algAES)
 		writeEnrollmentU16(&area, 128)

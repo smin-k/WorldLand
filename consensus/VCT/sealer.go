@@ -10,7 +10,6 @@ import (
 	crand "crypto/rand"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"math/big"
 	"math/rand"
@@ -44,6 +43,59 @@ var (
 // Seal implements consensus.Engine.
 // It checks secp256k1 VCT eligibility before mining.
 func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, results chan<- *types.Block, stop <-chan struct{}) error {
+	if ecc.shared != nil {
+		return ecc.shared.Seal(chain, block, results, stop)
+	}
+	if ecc.config.PowMode != ModeFake && ecc.config.PowMode != ModeFullFake && chain.Config().IsVCT(block.Number()) {
+		prepared := block.Header()
+		if err := ecc.PrepareBlockTemplate(chain, prepared); err != nil {
+			return err
+		}
+		if ecc.SealHash(prepared) != ecc.SealHash(block.Header()) {
+			return errors.New("VCT: template must be prepared before executing transactions")
+		}
+		if _, err := ecc.verifiedVRFOutput(chain, block.Header()); err != nil {
+			return err
+		}
+		// Return immediately so the worker can cancel/rebuild on a new parent
+		// or private registration transaction while eligibility is delayed.
+		if delay := time.Until(time.Unix(int64(block.Time()), 0)); delay > 0 {
+			var closed <-chan struct{}
+			if ecc.remote != nil {
+				closed = ecc.remote.exitCh
+			}
+			go func() {
+				timer := time.NewTimer(delay)
+				defer timer.Stop()
+				select {
+				case <-stop:
+					return
+				case <-closed:
+					return
+				case <-timer.C:
+				}
+				if err := ecc.sealPrepared(chain, block, results, stop); err != nil {
+					log.Error("VCT: delayed sealing failed", "err", err)
+				}
+			}()
+			return nil
+		}
+	}
+	return ecc.sealPrepared(chain, block, results, stop)
+}
+
+func (ecc *ECC) sealPrepared(chain consensus.ChainHeaderReader, block *types.Block, results chan<- *types.Block, stop <-chan struct{}) error {
+	var closed <-chan struct{}
+	if ecc.remote != nil {
+		closed = ecc.remote.exitCh
+	}
+	select {
+	case <-stop:
+		return nil
+	case <-closed:
+		return nil
+	default:
+	}
 	if ecc.config.PowMode == ModeFake || ecc.config.PowMode == ModeFullFake {
 		header := block.Header()
 		header.Nonce, header.MixDigest = types.BlockNonce{}, common.Hash{}
@@ -58,129 +110,9 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		return ecc.shared.Seal(chain, block, results, stop)
 	}
 
-	blockNumber := block.Header().Number.Uint64()
 	header := block.Header()
 	isVCT := chain.Config().IsVCT(header.Number)
 	isTPMGated := chain.Config().IsTPMGated(header.Number)
-
-	if isVCT {
-		coinbase := header.Coinbase
-		if err := ecc.EnsureVRFKeys(coinbase); err != nil {
-			return fmt.Errorf("VCT: VRF key error: %w", err)
-		}
-
-		// TPM-gated blocks grant exactly one VRF trial to an active registered
-		// TPM-bound identity. Legacy VCT blocks retain the balance-derived virtual trial rule.
-		// blockchain.go enforces the same rule on insertion.
-		trialWeight := new(big.Int).Set(big1)
-		if !isTPMGated {
-			vctCfg := chain.Config().Vct
-			if vctCfg == nil {
-				return errors.New("VCT: missing VCT configuration")
-			}
-			if b0 := vctCfg.MinEligibleBalanceAt(header.Number); b0.Sign() > 0 {
-				sb, ok := chain.(stateBackend)
-				if !ok {
-					return fmt.Errorf("VCT: parent-state backend unavailable for balance-weighted eligibility at block %d", blockNumber)
-				}
-				ph := chain.GetHeaderByHash(header.ParentHash)
-				if ph == nil {
-					return fmt.Errorf("VCT: parent header unavailable for balance-weighted eligibility at block %d", blockNumber)
-				}
-				pstate, serr := sb.StateAt(ph.Root)
-				if serr != nil {
-					return fmt.Errorf("VCT: parent state unavailable for balance-weighted eligibility at block %d: %w", blockNumber, serr)
-				}
-				bal := pstate.GetBalance(coinbase)
-				trialWeight.Div(new(big.Int).Set(bal), b0)
-				if trialWeight.Sign() == 0 {
-					return fmt.Errorf("VCT: coinbase %s balance %s wei grants zero virtual trials at B0 %s wei, not mining block %d",
-						coinbase.Hex(), bal.String(), b0.String(), blockNumber)
-				}
-			}
-		}
-		if isTPMGated {
-			did, signer, err := ecc.ensureTPMWorkSigner()
-			if err != nil {
-				return err
-			}
-			header.TPMDID = append([]byte(nil), did[:]...)
-			header.TPMWorkPublicKey = signer.PublicKey()
-			header.VRFSignature = nil
-		}
-
-		if parentHeader := chain.GetHeaderByHash(header.ParentHash); parentHeader != nil {
-			header.EligibilityThreshold = ecc.CalcEligibilityThreshold(chain, header.Time, parentHeader)
-			header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parentHeader)
-		}
-
-		// VCT phase (Rokis+): VRF eligibility gates who may propose each block.
-		_, proof, err := ecc.IsEligibleForBlock(chain, blockNumber, block.Header().ParentHash, header.EligibilityThreshold)
-		if err != nil {
-			return fmt.Errorf("VCT: eligibility check failed: %w", err)
-		}
-		output, err := VRFOutputFromProof(proof)
-		if err != nil {
-			return fmt.Errorf("VCT: cannot extract VRF output: %w", err)
-		}
-		eligible := EligibilityPassesWithWeight(output, header.EligibilityThreshold, 0, trialWeight)
-
-		if !eligible {
-			// WIP-6 progressive timeout: wait until deltaT expands the threshold enough.
-			delay := EligibilitySubmitDelayWithWeight(output, header.EligibilityThreshold, trialWeight)
-
-			parentHeader := chain.GetHeaderByHash(header.ParentHash)
-			var parentTime uint64
-			if parentHeader != nil {
-				parentTime = parentHeader.Time
-			}
-			submitAt := parentTime + delay + VCTFutureTolerance
-			log.Info("VCT: not immediately eligible; waiting for progressive timeout",
-				"block", blockNumber, "virtualTrials", trialWeight, "delay_s", delay, "submitAt", submitAt)
-
-			deadline := time.Unix(int64(submitAt), 0)
-			if waitDur := time.Until(deadline); waitDur > 0 {
-				timer := time.NewTimer(waitDur)
-				select {
-				case <-timer.C:
-				case <-stop:
-					timer.Stop()
-					log.Info("VCT: mining aborted during timeout wait", "block", blockNumber)
-					return nil
-				}
-				timer.Stop()
-			}
-
-			nowSec := uint64(time.Now().Unix())
-			if nowSec > submitAt {
-				header.Time = nowSec
-			} else {
-				header.Time = submitAt
-			}
-			if parentHeader := chain.GetHeaderByHash(header.ParentHash); parentHeader != nil {
-				header.EligibilityThreshold = ecc.CalcEligibilityThreshold(chain, header.Time, parentHeader)
-				header.Difficulty = ecc.CalcDifficulty(chain, header.Time, parentHeader)
-			}
-			log.Info("VCT: progressive timeout elapsed, proceeding with mining",
-				"block", blockNumber, "timestamp", header.Time, "difficulty", header.Difficulty, "threshold", header.EligibilityThreshold)
-		} else {
-			log.Info("VCT: eligible to mine", "block", blockNumber, "virtualTrials", trialWeight, "threshold", header.EligibilityThreshold)
-		}
-
-		// Embed VRF proof + public key in the header.
-		header.VRFProof = proof
-		ecc.lock.Lock()
-		header.VRFPublicKey = make([]byte, len(ecc.vrfPubKey))
-		copy(header.VRFPublicKey, ecc.vrfPubKey)
-		ecc.lock.Unlock()
-	} else {
-		// Pre-VCT (Seoul) phase: pure ECCPoW, no eligibility gate.
-		// VRFProof and VRFPublicKey are intentionally left empty.
-		header.EligibilityThreshold = nil
-		log.Debug("VCT: pre-VCT block, skipping eligibility", "block", blockNumber)
-	}
-
-	block = block.WithSeal(header)
 
 	abort := make(chan struct{})
 
@@ -203,13 +135,27 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 		threads = 0
 	}
 	if ecc.remote != nil {
-		ecc.remote.workCh <- &sealTask{block: block, results: results}
+		select {
+		case ecc.remote.workCh <- &sealTask{block: block, results: results}:
+		case <-stop:
+			return nil
+		case <-closed:
+			return nil
+		}
 	}
 
 	var (
 		pend   sync.WaitGroup
 		locals = make(chan *types.Block)
 	)
+	// Timer wakeups and recommits can briefly overlap. math/rand.Rand is not
+	// concurrency-safe, even though mining itself runs in separate goroutines.
+	ecc.lock.Lock()
+	nonces := make([]uint64, threads)
+	for i := range nonces {
+		nonces[i] = uint64(ecc.rand.Int63())
+	}
+	ecc.lock.Unlock()
 	for i := 0; i < threads; i++ {
 		pend.Add(1)
 		go func(id int, nonce uint64) {
@@ -219,13 +165,15 @@ func (ecc *ECC) Seal(chain consensus.ChainHeaderReader, block *types.Block, resu
 			} else {
 				ecc.mine(block, id, nonce, abort, locals, isVCT, isTPMGated)
 			}
-		}(i, uint64(ecc.rand.Int63()))
+		}(i, nonces[i])
 	}
 
 	go func() {
 		var result *types.Block
 		select {
 		case <-stop:
+			close(abort)
+		case <-closed:
 			close(abort)
 		case result = <-locals:
 			select {

@@ -415,7 +415,17 @@ func (ecc *ECC) verifyVRFProof(chain consensus.ChainHeaderReader, header, parent
 func (ecc *ECC) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, parent *types.Header) *big.Int {
 	next := new(big.Int).Add(parent.Number, big1)
 	if chain.Config().IsVCT(next) {
-		rawDiff := applyVCTMinimumDifficulty(ecc.calcBaseDifficulty(chain, time, parent))
+		floor := VCTMinimumDifficulty
+		if cfg := chain.Config().Vct; cfg != nil && cfg.MinimumDifficulty >= 1024 {
+			floor = new(big.Int).SetUint64(cfg.MinimumDifficulty)
+		}
+		clamp := func(d *big.Int) *big.Int {
+			if d.Cmp(floor) < 0 {
+				return new(big.Int).Set(floor)
+			}
+			return new(big.Int).Set(d)
+		}
+		rawDiff := clamp(ecc.calcBaseDifficulty(chain, time, parent))
 		threshold := ecc.CalcEligibilityThreshold(chain, time, parent)
 		if threshold.Cmp(EligibilityBase) > 0 {
 			// While admission has slack, spend the Annapurna timing signal on
@@ -424,7 +434,7 @@ func (ecc *ECC) CalcDifficulty(chain consensus.ChainHeaderReader, time uint64, p
 			if threshold.Cmp(EligibilityThresholdMax) >= 0 && rawDiff.Cmp(parent.Difficulty) < 0 {
 				return rawDiff
 			}
-			return applyVCTMinimumDifficulty(parent.Difficulty)
+			return clamp(parent.Difficulty)
 		}
 		return rawDiff
 	}

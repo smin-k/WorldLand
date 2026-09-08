@@ -21,7 +21,7 @@ import (
 	"github.com/cryptoecc/WorldLand/params"
 )
 
-const chainID = 103992
+const chainID = 103993
 const profile = "WorldLand GCP CAS v1 demo: RSA2048 EK/AK; P256 TPM work; secp256k1 VRF"
 
 type nodeIdentity struct {
@@ -113,9 +113,11 @@ func genesis(dir string, files []string) {
 		must(json.Unmarshal(raw, &identities[i]))
 		v, err := p.ValidateEvidence(big.NewInt(chainID), tpmregistry.DefaultRegistryAddress, &identities[i].Evidence)
 		must(err)
-		if v.DID != identities[i].DID || seen[v.DeviceNullifier] {
+		if seen[v.DeviceNullifier] {
 			log.Fatal("duplicate or invalid identity")
 		}
+		// DID is chain-bound; derive it again from validated evidence for this new chain.
+		identities[i].DID = v.DID
 		pub, err := crypto.DecompressPubkey(identities[i].Evidence.VRFPublicKey)
 		must(err)
 		if crypto.PubkeyToAddress(*pub) != identities[i].Controller {
@@ -130,8 +132,8 @@ func genesis(dir string, files []string) {
 	config.TPMGatedBlock = big.NewInt(1)
 	config.TPMRegistryBlock = nil
 	config.TPMRegistry = nil
-	config.Vct = &params.VctConfig{SeedDelay: 1, MinEligibleBalance: new(big.Int), InitialEligibilityThreshold: big.NewInt(256)}
-	g := &core.Genesis{Config: &config, Nonce: chainID, Timestamp: uint64(time.Now().Unix() - 1), ExtraData: []byte("TGPoW GCP 2+3 real vTPM demo"), GasLimit: 30000000, Difficulty: big.NewInt(65536), BaseFee: new(big.Int).SetUint64(params.InitialBaseFee), Alloc: make(core.GenesisAlloc)}
+	config.Vct = &params.VctConfig{MinimumDifficulty: 4096, SeedDelay: 1, MinEligibleBalance: new(big.Int), InitialEligibilityThreshold: big.NewInt(256)}
+	g := &core.Genesis{Config: &config, Nonce: chainID, Timestamp: uint64(time.Now().Unix() - 1), ExtraData: []byte("TGPoW GCP 4096 demo"), GasLimit: 30000000, Difficulty: big.NewInt(4096), BaseFee: new(big.Int).SetUint64(params.InitialBaseFee), Alloc: make(core.GenesisAlloc)}
 	funding, _ := new(big.Int).SetString("1000000000000000000000000", 10)
 	for _, id := range identities {
 		g.Alloc[id.Controller] = core.GenesisAccount{Balance: new(big.Int).Set(funding)}

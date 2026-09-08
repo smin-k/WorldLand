@@ -629,6 +629,9 @@ type EccpowConfig struct{}
 
 // VctConfig is the consensus engine config for the VCT (WIP-6) network.
 type VctConfig struct {
+	// MinimumDifficulty overrides the WIP-8 floor for isolated research chains.
+	// Zero preserves the production default of 65536. Values below 1024 are invalid.
+	MinimumDifficulty uint64 `json:"minimumDifficulty,omitempty"`
 	// SeedDelay selects the ancestor height committed to the VRF input. A value
 	// of d binds block h to the ancestor at max(0, h-d). Zero is interpreted as
 	// one for backwards compatibility with the original parent-bound rule.
@@ -980,6 +983,9 @@ func (c *ChainConfig) CheckCompatible(newcfg *ChainConfig, height uint64) *Confi
 // CheckConfigForkOrder checks that we don't "skip" any forks, geth isn't pluggable enough
 // to guarantee that forks can be implemented in a different order than on official networks
 func (c *ChainConfig) CheckConfigForkOrder() error {
+	if c.Vct != nil && c.Vct.MinimumDifficulty != 0 && c.Vct.MinimumDifficulty < 1024 {
+		return fmt.Errorf("VCT minimum difficulty must be at least 1024")
+	}
 	if c.TPMGatedBlock != nil && c.VCTBlock == nil {
 		return fmt.Errorf("unsupported fork ordering: tpmGatedBlock requires vctBlock")
 	}
@@ -1177,6 +1183,8 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 			newVCT = *newcfg.Vct
 		}
 		switch {
+		case storedVCT.MinimumDifficulty != newVCT.MinimumDifficulty:
+			return newVCTCompatError("VCT minimum difficulty", new(big.Int).SetUint64(storedVCT.MinimumDifficulty), new(big.Int).SetUint64(newVCT.MinimumDifficulty), c.VCTBlock, newcfg.VCTBlock)
 		case !configNumEqualOrZero(storedVCT.MinEligibleBalance, newVCT.MinEligibleBalance):
 			return newVCTCompatError("VCT minimum eligible balance", storedVCT.MinEligibleBalance, newVCT.MinEligibleBalance, c.VCTBlock, newcfg.VCTBlock)
 		case !configNumEqualOrZero(storedVCT.InitialEligibilityThreshold, newVCT.InitialEligibilityThreshold):

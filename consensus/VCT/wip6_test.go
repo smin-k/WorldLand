@@ -438,6 +438,10 @@ func TestWIP8VCTMinimumDifficultyAtFork(t *testing.T) {
 	if diff.Cmp(VCTMinimumDifficulty) != 0 {
 		t.Fatalf("first VCT difficulty = %v, want minimum %v", diff, VCTMinimumDifficulty)
 	}
+	cfg.Vct.MinimumDifficulty = 4096
+	if got := ecc.CalcDifficulty(chain, parent.Time+1, parent); got.Cmp(big.NewInt(4096)) != 0 {
+		t.Fatalf("research floor = %v, want 4096", got)
+	}
 }
 
 // TestVCTVRFFullPipeline exercises the complete VRF pipeline in WIP-6 mode:

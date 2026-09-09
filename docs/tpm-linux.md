@@ -1,5 +1,9 @@
 # Linux TPM 2.0 backend
 
+Later six-node real-vTPM enrollment, mining and attack/load observations are
+indexed in [`../experiments/tgpow-gcp-full/README.md`](../experiments/tgpow-gcp-full/README.md).
+They are bounded GCP vTPM results, not proof of physical-device scarcity.
+
 Linux now implements the same `Signer`, `KeyCertifier`, and
 `CredentialActivator` interfaces as the Windows backend. Consensus, enrollment
 waiting periods, lottery probabilities, and certificate policy are unchanged.

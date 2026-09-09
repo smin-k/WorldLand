@@ -1,5 +1,9 @@
 # Explicit Google Cloud EK certificate policy
 
+For the subsequent real six-node deployment results (2026-09-08–09), see
+[`../experiments/tgpow-gcp-full/README.md`](../experiments/tgpow-gcp-full/README.md).
+Earlier preflight-only statements describe their original observation scope.
+
 The client repository includes an opt-in `gcp-cas-v1` certificate policy for
 `tpmvalidator` and `tpmproducer`. The default `manufacturer` policy and its
 digest encoding are unchanged. This is not an automatic relaxation of TPM

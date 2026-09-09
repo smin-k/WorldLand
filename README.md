@@ -14,6 +14,23 @@ Worldland is an EVM-compatible blockchain that uses [Error-Correction Code Proof
 
 ## Documentation
 * Worldland Documentation can be found [here](https://docs.worldland.foundation/).
+
+### TPM-gated research branch
+
+This branch includes opt-in TPM enrollment and producer preparation integrated
+into the client. It is not a mainnet-readiness or unrestricted-security claim.
+
+- [Integrated client configuration and limits](docs/tpm-integrated-client.md)
+- [Six-node real-vTPM campaign and result index](experiments/tgpow-gcp-full/README.md)
+- [Korean experiment summary](experiments/tgpow-gcp-full/RESULTS-summary-ko.md)
+
+Registration evidence is recorded on chain, but certificate/Certify validation
+is performed by the assigned producers. Integrating their service into the node
+does not make every full node independently redo all enrollment cryptography.
+The6/6policy counts producer slots, not necessarily six distinct operators.
+Deployment scripts are historical, environment-specific operations, not safe
+one-command production setup. Raw DBs and private keys are not published.
+
 ## Contribution
 Thank you for considering helping out with the source code! We welcome contributions from anyone on the internet, and are grateful for even the smallest of fixes!
 

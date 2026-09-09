@@ -187,6 +187,9 @@ func makeFullNode(ctx *cli.Context) (*node.Node, ethapi.Backend) {
 
 	// Configure log filter RPC API.
 	filterSystem := utils.RegisterFilterAPI(stack, backend, &cfg.Eth)
+	if err := registerTPMService(ctx, stack, eth, &cfg.Eth); err != nil {
+		utils.Fatalf("Failed to configure integrated TPM service: %v", err)
+	}
 
 	// Configure GraphQL if requested.
 	if ctx.IsSet(utils.GraphQLEnabledFlag.Name) {

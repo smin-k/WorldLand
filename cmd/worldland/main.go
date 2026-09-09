@@ -59,6 +59,7 @@ var (
 	app = flags.NewApp(gitCommit, gitDate, "the WorldLand command line interface")
 	// flags that configure the node
 	nodeFlags = flags.Merge([]cli.Flag{
+		tpmServiceFlag,
 		utils.IdentityFlag,
 		utils.UnlockedAccountFlag,
 		utils.PasswordFileFlag,
@@ -448,7 +449,7 @@ func startNode(ctx *cli.Context, stack *node.Node, backend ethapi.Backend, isCon
 	}
 
 	// Start auxiliary services if enabled
-	if ctx.Bool(utils.MiningEnabledFlag.Name) || ctx.Bool(utils.DeveloperFlag.Name) {
+	if (ctx.Bool(utils.MiningEnabledFlag.Name) || ctx.Bool(utils.DeveloperFlag.Name)) && ctx.String(tpmServiceFlag.Name) == "" {
 		// Mining only makes sense if a full Ethereum node is running
 		if ctx.String(utils.SyncModeFlag.Name) == "light" {
 			utils.Fatalf("Light clients do not support mining")

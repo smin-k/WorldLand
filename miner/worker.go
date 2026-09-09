@@ -227,9 +227,13 @@ type worker struct {
 	pendingMu    sync.RWMutex
 	pendingTasks map[common.Hash]*task
 
-	privateTxMu   sync.RWMutex
-	privateTxs    map[uint64][]*types.Transaction
-	privateParent common.Hash // All queued transactions belong to this exact parent.
+	privateTxMu        sync.RWMutex
+	enrollmentMu       sync.RWMutex
+	enrollmentPreparer EnrollmentPreparer
+	enrollmentTimeout  time.Duration
+	enrollmentReady    common.Hash
+	privateTxs         map[uint64][]*types.Transaction
+	privateParent      common.Hash // All queued transactions belong to this exact parent.
 
 	snapshotMu       sync.RWMutex // The lock used to protect the snapshots below
 	snapshotBlock    *types.Block
@@ -1206,10 +1210,10 @@ func (w *worker) enrollmentQueue(target uint64, parent common.Hash) ([]*types.Tr
 	return txs, nil
 }
 
-func (w *worker) commitPrivateEnrollmentTransactions(env *environment) {
+func (w *worker) commitPrivateEnrollmentTransactions(env *environment) error {
 	transactions := w.privateEnrollmentForParent(env.header.Number.Uint64(), env.header.ParentHash)
 	if len(transactions) == 0 {
-		return
+		return nil
 	}
 	if env.gasPool == nil {
 		env.gasPool = new(core.GasPool).AddGas(env.header.GasLimit)
@@ -1225,6 +1229,9 @@ func (w *worker) commitPrivateEnrollmentTransactions(env *environment) {
 			*env.gasPool = gasBefore
 			env.header.GasUsed = gasUsedBefore
 			log.Warn("Skipping private producer challenge", "hash", tx.Hash(), "err", err)
+			if w.hasEnrollmentPreparer() {
+				return err
+			}
 			continue
 		}
 		if env.receipts[len(env.receipts)-1].Status == 0 {
@@ -1234,10 +1241,14 @@ func (w *worker) commitPrivateEnrollmentTransactions(env *environment) {
 			env.txs = env.txs[:txCountBefore]
 			env.receipts = env.receipts[:receiptCountBefore]
 			log.Warn("Skipping reverted private producer transaction", "hash", tx.Hash())
+			if w.hasEnrollmentPreparer() {
+				return errors.New("miner: prepared enrollment transaction reverted")
+			}
 			continue
 		}
 		env.tcount++
 	}
+	return nil
 }
 
 // generateWork generates a sealing block based on the given parameters.
@@ -1275,6 +1286,14 @@ func (w *worker) commitWork(interrupt *int32, noempty bool, timestamp int64) {
 	if err != nil {
 		return
 	}
+	if w.isRunning() {
+		parent := w.chain.GetHeaderByHash(work.header.ParentHash)
+		if err := w.prepareEnrollment(parent); err != nil {
+			log.Warn("Enrollment preparation rejected mining candidate", "number", work.header.Number, "err", err)
+			work.discard()
+			return
+		}
+	}
 	privateEnrollment := w.privateEnrollmentTransactions(work.header.Number.Uint64())
 	// Create an empty block based on temporary copied state for
 	// sealing in advance without waiting block execution finished.
@@ -1284,7 +1303,11 @@ func (w *worker) commitWork(interrupt *int32, noempty bool, timestamp int64) {
 
 	// Producer challenges must precede public-pool transactions so their nonce
 	// and exact target height remain deterministic.
-	w.commitPrivateEnrollmentTransactions(work)
+	if err := w.commitPrivateEnrollmentTransactions(work); err != nil {
+		log.Warn("Discarding candidate with failed enrollment execution", "err", err)
+		work.discard()
+		return
+	}
 	// Fill pending transactions from the txpool
 	err = w.fillTransactions(interrupt, work)
 	if errors.Is(err, errBlockInterruptedByNewHead) {
@@ -1307,6 +1330,9 @@ func (w *worker) commitWork(interrupt *int32, noempty bool, timestamp int64) {
 // the deep copy first.
 func (w *worker) commit(env *environment, interval func(), update bool, start time.Time) error {
 	if w.isRunning() {
+		if !w.enrollmentCanSeal(env.header.ParentHash) {
+			return errors.New("miner: enrollment preparation is incomplete or parent changed")
+		}
 		if interval != nil {
 			interval()
 		}

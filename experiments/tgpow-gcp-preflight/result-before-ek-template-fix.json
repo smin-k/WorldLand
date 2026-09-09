@@ -1,0 +1,10 @@
+{
+  "certificateChainTrusted": false,
+  "certifyVerified": true,
+  "error": "tpmwork: certificate does not match TPM EK",
+  "mining": false,
+  "persistentReopenVerified": true,
+  "signaturesVerified": 5,
+  "success": false,
+  "workPublicKey": "043cc985bdcdb85207bdeb93b76f8aff10df2ba69ccd9dbe0788e359b74420ff5d9804c3de29dff947fc081988aaaf0670380fd075b9f69e3c805c07c28ce6b71e"
+}

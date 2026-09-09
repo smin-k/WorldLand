@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WorldLand · TPM Testnet Explorer</title><meta name="description" content="GCP 5-node TPM testnet: blocks, peer status and enrollment"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
-<body><main><header><span class="eyebrow">WORLDLAND / RESEARCH TESTNET</span><h1>TPM Testnet Explorer</h1><p>초기 등록 2노드 + 제네시스 이후 등록 3노드 · 실제 GCP vTPM · Chain 103992</p></header>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WorldLand · TPM Testnet Explorer</title><meta name="description" content="GCP TPM testnet: blocks, peer status and enrollment"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><main><header><span class="eyebrow">WORLDLAND / RESEARCH TESTNET</span><h1>TPM Testnet Explorer</h1><p id="experiment">실험 설정을 불러오는 중입니다.</p></header>
 <p id="notice" role="status">노드 관측 자료를 불러오는 중입니다.</p>
-<section class="stats" aria-label="네트워크 요약"><article><span>블록 높이 · Node 1</span><strong id="height">—</strong></article><article><span>응답 노드</span><strong id="online">— / 5</strong></article><article><span>활성 등록 · Node 1 상태</span><strong id="active">— / 5</strong></article></section>
+<section class="stats" aria-label="네트워크 요약"><article><span>블록 높이 · Node 1</span><strong id="height">—</strong></article><article><span>응답 노드</span><strong id="online">—</strong></article><article><span>활성 등록 · Node 1 상태</span><strong id="active">—</strong></article></section>
 <h2>노드 동작 상태</h2><div class="scroll"><table><thead><tr><th>노드</th><th>높이</th><th>연결 수</th><th>블록 생성</th><th>최신 블록 해시</th><th>관측 시각</th></tr></thead><tbody id="nodes"></tbody></table></div>
-<h2>TPM 등록 상태</h2><p>활성화 대기 6블록 · 생산 슬롯 6개 중 2개 승인 · 슬롯은 독립된 사람 수가 아닙니다.</p><div class="scroll"><table><thead><tr><th>노드</th><th>등록 경로</th><th>상태</th><th>컨트롤러</th><th>TPM 식별자</th></tr></thead><tbody id="registrations"></tbody></table></div>
+<h2>TPM 등록 상태</h2><p id="policy">등록 정책을 불러오는 중입니다.</p><div class="scroll"><table><thead><tr><th>노드</th><th>등록 경로</th><th>상태</th><th>컨트롤러</th><th>TPM 식별자</th></tr></thead><tbody id="registrations"></tbody></table></div>
 <h2>최근 20개 블록</h2><p>블록 높이를 누르면 TPM 서명·VRF·트랜잭션 해시를 포함한 원본 필드를 볼 수 있습니다.</p><div class="scroll"><table><thead><tr><th>높이</th><th>생성 시각</th><th>생산자</th><th>난이도</th><th>당첨 임계값</th><th>트랜잭션</th></tr></thead><tbody id="blocks"></tbody></table></div>
-<details id="detail"><summary>선택한 블록 원본</summary><pre id="block-json">블록을 선택하세요.</pre></details><footer>읽기 전용 연구용 탐색기 · 5초 간격 갱신 · 무가치 테스트 토큰 · vTPM 5개는 물리 TPM 5개를 의미하지 않습니다.</footer></main></body></html>
+<details id="detail"><summary>선택한 블록 원본</summary><pre id="block-json">블록을 선택하세요.</pre></details><footer>읽기 전용 연구용 탐색기 · 5초 간격 갱신 · 무가치 테스트 토큰 · vTPM 수는 물리 TPM 수를 의미하지 않습니다.</footer></main></body></html>

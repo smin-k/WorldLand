@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"flag"
 	"fmt"
 	"log"
 	"math/big"
@@ -21,7 +22,10 @@ import (
 	"github.com/cryptoecc/WorldLand/params"
 )
 
-const chainID = 103993
+var chainID int64 = 103993
+var nodeCount, bootstrapCount, approvalThreshold int = 5, 2, 2
+var initialEligibility int64 = 256
+
 const profile = "WorldLand GCP CAS v1 demo: RSA2048 EK/AK; P256 TPM work; secp256k1 VRF"
 
 type nodeIdentity struct {
@@ -37,15 +41,25 @@ func policy() *tpmregistry.Policy {
 }
 
 func main() {
-	if len(os.Args) < 3 {
+	flag.Int64Var(&chainID, "chain-id", 103993, "isolated chain ID")
+	flag.IntVar(&nodeCount, "nodes", 5, "independent node identities")
+	flag.IntVar(&bootstrapCount, "bootstrap", 2, "genesis identities")
+	flag.IntVar(&approvalThreshold, "threshold", 2, "required approvals out of six slots")
+	flag.Int64Var(&initialEligibility, "eligibility", 256, "initial threshold in 256ths; remains adaptive")
+	flag.Parse()
+	if chainID <= 0 || nodeCount < 2 || nodeCount > 10 || bootstrapCount < 1 || bootstrapCount >= nodeCount || approvalThreshold < 1 || approvalThreshold > 6 || initialEligibility < 1 || initialEligibility > 256 {
+		log.Fatal("invalid experiment parameters")
+	}
+	args := flag.Args()
+	if len(args) < 2 {
 		log.Fatal("usage: setup prepare DIRECTORY | genesis DIRECTORY identity1.json ... identity5.json")
 	}
-	dir := os.Args[2]
-	switch os.Args[1] {
+	dir := args[1]
+	switch args[0] {
 	case "prepare":
 		prepare(dir)
 	case "genesis":
-		genesis(dir, os.Args[3:])
+		genesis(dir, args[2:])
 	default:
 		log.Fatal("unknown action")
 	}
@@ -98,14 +112,14 @@ func prepare(dir string) {
 }
 
 func genesis(dir string, files []string) {
-	if len(files) != 5 {
-		log.Fatal("five public identity files required")
+	if len(files) != nodeCount {
+		log.Fatal("identity file count must match nodes")
 	}
 	p := policy()
 	digest, err := p.Digest()
 	must(err)
-	identities := make([]nodeIdentity, 5)
-	values := make([]*tpmregistry.ValidatedEvidence, 5)
+	identities := make([]nodeIdentity, nodeCount)
+	values := make([]*tpmregistry.ValidatedEvidence, nodeCount)
 	seen := make(map[common.Hash]bool)
 	for i, file := range files {
 		raw, err := os.ReadFile(file)
@@ -132,23 +146,23 @@ func genesis(dir string, files []string) {
 	config.TPMGatedBlock = big.NewInt(1)
 	config.TPMRegistryBlock = nil
 	config.TPMRegistry = nil
-	config.Vct = &params.VctConfig{MinimumDifficulty: 4096, SeedDelay: 1, MinEligibleBalance: new(big.Int), InitialEligibilityThreshold: big.NewInt(256)}
-	g := &core.Genesis{Config: &config, Nonce: chainID, Timestamp: uint64(time.Now().Unix() - 1), ExtraData: []byte("TGPoW GCP 4096 demo"), GasLimit: 30000000, Difficulty: big.NewInt(4096), BaseFee: new(big.Int).SetUint64(params.InitialBaseFee), Alloc: make(core.GenesisAlloc)}
+	config.Vct = &params.VctConfig{MinimumDifficulty: 4096, SeedDelay: 1, MinEligibleBalance: new(big.Int), InitialEligibilityThreshold: big.NewInt(initialEligibility)}
+	g := &core.Genesis{Config: &config, Nonce: uint64(chainID), Timestamp: uint64(time.Now().Unix() - 1), ExtraData: []byte("TGPoW GCP research"), GasLimit: 30000000, Difficulty: big.NewInt(4096), BaseFee: new(big.Int).SetUint64(params.InitialBaseFee), Alloc: make(core.GenesisAlloc)}
 	funding, _ := new(big.Int).SetString("1000000000000000000000000", 10)
 	for _, id := range identities {
 		g.Alloc[id.Controller] = core.GenesisAccount{Balance: new(big.Int).Set(funding)}
 	}
-	must(registrygenesis.Apply(g, tpmregistry.PredeployConfig{Address: tpmregistry.DefaultRegistryAddress, FixedCollateral: new(big.Int), Governor: identities[0].Controller, RegistrationTTL: 180, ActivationDelay: 6, ProducerSlotCount: 6, ProducerThreshold: 2, ProducerSlotDelay: 2, ProducerResponseWindow: 60, ProducerPolicyDigest: digest}))
+	must(registrygenesis.Apply(g, tpmregistry.PredeployConfig{Address: tpmregistry.DefaultRegistryAddress, FixedCollateral: new(big.Int), Governor: identities[0].Controller, RegistrationTTL: 180, ActivationDelay: 6, ProducerSlotCount: 6, ProducerThreshold: uint16(approvalThreshold), ProducerSlotDelay: 2, ProducerResponseWindow: 60, ProducerPolicyDigest: digest}))
 	account := g.Alloc[tpmregistry.DefaultRegistryAddress]
-	for i := 0; i < 2; i++ {
+	for i := 0; i < bootstrapCount; i++ {
 		v := values[i]
 		must(tpmregistry.AddBootstrapRegistration(account.Storage, tpmregistry.BootstrapRegistration{DID: v.DID, Controller: identities[i].Controller, WorkKeyHash: v.WorkKeyHash, VRFKeyHash: v.VRFKeyHash, ProfileHash: v.ProfileHash, DeviceNullifier: v.DeviceNullifier}))
 	}
 	g.Alloc[tpmregistry.DefaultRegistryAddress] = account
 	must(g.Config.CheckConfigForkOrder())
 	must(writeJSON(filepath.Join(dir, "genesis.json"), g))
-	must(writeJSON(filepath.Join(dir, "manifest.json"), map[string]interface{}{"chainId": chainID, "policyDigest": digest, "profileHash": crypto.Keccak256Hash([]byte(profile)), "bootstrapCount": 2, "activationDelay": 6, "producerSlots": 6, "producerThreshold": 2, "initialEligibility": 256, "identities": identities}))
-	fmt.Printf("genesis prepared: chain=%d policy=%s bootstrap=2 late=3\n", chainID, digest)
+	must(writeJSON(filepath.Join(dir, "manifest.json"), map[string]interface{}{"chainId": chainID, "policyDigest": digest, "profileHash": crypto.Keccak256Hash([]byte(profile)), "bootstrapCount": bootstrapCount, "activationDelay": 6, "producerSlots": 6, "producerThreshold": approvalThreshold, "initialEligibility": initialEligibility, "identities": identities}))
+	fmt.Printf("genesis prepared: chain=%d policy=%s bootstrap=%d late=%d\n", chainID, digest, bootstrapCount, nodeCount-bootstrapCount)
 }
 
 func writeNew(path string, b []byte) error {

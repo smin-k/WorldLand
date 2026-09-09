@@ -35,8 +35,13 @@ type identity struct {
 	DID        string `json:"did"`
 }
 type manifest struct {
-	ChainID    int        `json:"chainId"`
-	Identities []identity `json:"identities"`
+	ChainID           int        `json:"chainId"`
+	Identities        []identity `json:"identities"`
+	BootstrapCount    int        `json:"bootstrapCount"`
+	ProducerSlots     int        `json:"producerSlots"`
+	ProducerThreshold int        `json:"producerThreshold"`
+	ActivationDelay   int        `json:"activationDelay"`
+	ObserverEndpoints []string   `json:"observerEndpoints"`
 }
 type registration struct {
 	Controller string `json:"controller"`
@@ -126,7 +131,7 @@ func collect(n int, m manifest) snapshot {
 			s.Error = err.Error()
 			return s
 		}
-		s.Registrations = append(s.Registrations, registration{id.Controller, id.DID, i < 2, registered, active})
+		s.Registrations = append(s.Registrations, registration{id.Controller, id.DID, i < m.BootstrapCount, registered, active})
 	}
 	if n == 1 {
 		for i := uint64(0); i < 20 && i <= s.Height; i++ {
@@ -155,7 +160,7 @@ func main() {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		log.Fatal(err)
 	}
-	if len(m.Identities) != 5 || *n < 1 || *n > 5 {
+	if len(m.Identities) < 2 || *n < 1 || *n > len(m.Identities) || m.BootstrapCount < 1 || m.BootstrapCount >= len(m.Identities) {
 		log.Fatal("invalid experiment manifest/node")
 	}
 	var mu sync.RWMutex
@@ -186,12 +191,15 @@ func main() {
 		send(w, r, s)
 	})
 	if *public {
-		endpoints := []string{"http://10.78.0.2:8081/api/node", "http://10.78.0.6:8081/api/node", "http://10.78.0.5:8081/api/node", "http://10.78.0.3:8081/api/node", "http://10.78.0.4:8081/api/node"}
+		endpoints := m.ObserverEndpoints
+		if len(endpoints) != len(m.Identities) {
+			log.Fatal("observer endpoint count must match identities")
+		}
 		var aggregateMu sync.RWMutex
-		aggregate := make([]snapshot, 5)
+		aggregate := make([]snapshot, len(endpoints))
 		go func() {
 			for {
-				next := make([]snapshot, 5)
+				next := make([]snapshot, len(endpoints))
 				var wg sync.WaitGroup
 				for i, url := range endpoints {
 					wg.Add(1)
@@ -224,7 +232,7 @@ func main() {
 			aggregateMu.RLock()
 			copyValue := append([]snapshot{}, aggregate...)
 			aggregateMu.RUnlock()
-			send(w, r, map[string]interface{}{"chainId": m.ChainID, "nodes": copyValue})
+			send(w, r, map[string]interface{}{"chainId": m.ChainID, "nodes": copyValue, "bootstrapCount": m.BootstrapCount, "producerSlots": m.ProducerSlots, "producerThreshold": m.ProducerThreshold, "activationDelay": m.ActivationDelay})
 		})
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != "GET" {

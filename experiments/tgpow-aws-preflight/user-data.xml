@@ -1,0 +1,51 @@
+<powershell>
+$ErrorActionPreference = 'Stop'
+# Safety timer: this disposable instance terminates on OS shutdown.
+& shutdown.exe /s /t 900 /f /c 'TGPoW bounded preflight complete'
+$probePort = New-Object System.IO.Ports.SerialPort 'COM1',115200,'None',8,'One'
+try {
+    $probePort.Open()
+    $probePort.WriteLine('TGPOW_PREFLIGHT_BEGIN')
+    $probe = [ordered]@{ TimeUTC = [DateTime]::UtcNow.ToString('o') }
+    try {
+        $tpm = Get-Tpm
+        $probe.TpmPresent = $tpm.TpmPresent
+        $probe.TpmReady = $tpm.TpmReady
+        $probe.Manufacturer = $tpm.ManufacturerIdTxt
+        $ek = Get-TpmEndorsementKeyInfo -HashAlgorithm Sha256
+        $probe.EKPresent = $ek.IsPresent
+        $probe.ManufacturerCertificateCount = $ek.ManufacturerCertificates.Count
+        $probe.AdditionalCertificateCount = $ek.AdditionalCertificates.Count
+    } catch { $probe.InventoryError = $_.Exception.Message }
+    try {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class PreflightTbs {
+    [StructLayout(LayoutKind.Sequential)] public struct Params { public uint version; public uint flags; }
+    [DllImport("tbs.dll")] public static extern uint Tbsi_Context_Create(ref Params p, out IntPtr h);
+    [DllImport("tbs.dll")] public static extern uint Tbsip_Submit_Command(IntPtr h,uint locality,uint priority,byte[] command,uint size,byte[] result,ref uint length);
+    [DllImport("tbs.dll")] public static extern uint Tbsip_Context_Close(IntPtr h);
+}
+'@
+        $tp = New-Object PreflightTbs+Params
+        $tp.version = 2; $tp.flags = 4
+        $th = [IntPtr]::Zero
+        $probe.TbsCreateStatus = [PreflightTbs]::Tbsi_Context_Create([ref]$tp,[ref]$th)
+        if ($probe.TbsCreateStatus -eq 0) {
+            try {
+                # Read-only TPM2_NV_ReadPublic for the standard RSA EK certificate index.
+                [byte[]]$command = 0x80,0x01,0,0,0,0x0e,0,0,0x01,0x69,0x01,0xc0,0,0x02
+                [byte[]]$response = New-Object byte[] 4096
+                [uint32]$responseLength = $response.Length
+                $probe.NVReadPublicTbsStatus = [PreflightTbs]::Tbsip_Submit_Command($th,0,200,$command,$command.Length,$response,[ref]$responseLength)
+                $probe.NVReadPublicResponse = [BitConverter]::ToString($response,0,[int]$responseLength)
+            } finally { [void][PreflightTbs]::Tbsip_Context_Close($th) }
+        }
+    } catch { $probe.NVError = $_.Exception.Message }
+    $probePort.WriteLine('TGPOW_PREFLIGHT_JSON ' + ($probe | ConvertTo-Json -Compress))
+    $probePort.WriteLine('TGPOW_PREFLIGHT_END')
+} finally {
+    if ($probePort.IsOpen) { $probePort.Close() }
+}
+</powershell>

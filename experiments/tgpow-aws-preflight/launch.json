@@ -1,0 +1,31 @@
+{
+  "ImageId": "ami-0f7c9915974b2db69",
+  "InstanceType": "t3a.small",
+  "MinCount": 1,
+  "MaxCount": 1,
+  "ClientToken": "tgpow-preflight-20260907-1435",
+  "InstanceInitiatedShutdownBehavior": "terminate",
+  "CreditSpecification": { "CpuCredits": "standard" },
+  "MetadataOptions": { "HttpTokens": "required", "HttpEndpoint": "enabled" },
+  "NetworkInterfaces": [{
+    "DeviceIndex": 0,
+    "SubnetId": "subnet-504ca53b",
+    "Groups": ["sg-059913b1d032710a1"],
+    "AssociatePublicIpAddress": false,
+    "DeleteOnTermination": true
+  }],
+  "BlockDeviceMappings": [{
+    "DeviceName": "/dev/sda1",
+    "Ebs": { "VolumeSize": 30, "VolumeType": "gp3", "Encrypted": true, "DeleteOnTermination": true }
+  }],
+  "TagSpecifications": [
+    { "ResourceType": "instance", "Tags": [
+      { "Key": "Name", "Value": "tgpow-preflight-20260907-1435" },
+      { "Key": "Experiment", "Value": "tgpow-preflight-20260907-1435" }
+    ]},
+    { "ResourceType": "volume", "Tags": [
+      { "Key": "Name", "Value": "tgpow-preflight-20260907-1435" },
+      { "Key": "Experiment", "Value": "tgpow-preflight-20260907-1435" }
+    ]}
+  ]
+}

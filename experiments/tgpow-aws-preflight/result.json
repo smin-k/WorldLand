@@ -1,0 +1,20 @@
+{
+  "instanceId": "i-0f3acb49a3f44c228",
+  "region": "ap-northeast-2",
+  "imageId": "ami-0f7c9915974b2db69",
+  "instanceType": "t3a.small",
+  "TimeUTC": "2026-09-07T14:34:08.0648300Z",
+  "TpmPresent": true,
+  "TpmReady": true,
+  "Manufacturer": "AMZN",
+  "EKPresent": true,
+  "ManufacturerCertificateCount": 0,
+  "AdditionalCertificateCount": 0,
+  "TbsCreateStatus": 0,
+  "NVReadPublicTbsStatus": 0,
+  "NVReadPublicResponse": "80-01-00-00-00-0A-00-00-00-8B",
+  "source": "EC2 serial console TGPOW_PREFLIGHT_JSON",
+  "finding": "No EK certificates exposed by Windows and the standard RSA EK certificate NV public query returned a TPM error. Current manufacturer-certificate enrollment is not satisfied.",
+  "testnetDeployed": false,
+  "explorerDeployed": false
+}
